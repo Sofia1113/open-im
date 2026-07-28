@@ -1,0 +1,33 @@
+# 依赖与构建产物
+node_modules/
+dist/
+target/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# 环境变量与密钥
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.jks
+
+# 运行时数据
+apps/server/data/
+*.log
+
+# 编辑器与操作系统
+.DS_Store
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# 测试与工具产物
+.playwright/
+playwright-report/
+test-results/

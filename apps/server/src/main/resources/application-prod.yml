@@ -1,0 +1,13 @@
+server:
+  address: ${HOST:0.0.0.0}
+  shutdown: graceful
+  forward-headers-strategy: framework
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+openim:
+  demo-login-enabled: false
+  token-secret: ${TOKEN_SECRET}
+  client-origin: ${CLIENT_ORIGIN}

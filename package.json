@@ -1,0 +1,18 @@
+{
+  "name": "open-im",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "scripts": {
+    "predev": "pnpm --filter @open-im/contracts build",
+    "dev": "concurrently --kill-others-on-fail --names server,web --prefix-colors blue,green \"mvn -f apps/server/pom.xml spring-boot:run\" \"pnpm --filter @open-im/web dev\"",
+    "dev:server": "mvn -f apps/server/pom.xml spring-boot:run",
+    "dev:web": "pnpm --filter @open-im/web dev",
+    "build": "pnpm --filter @open-im/contracts build && mvn -f apps/server/pom.xml package && pnpm --filter @open-im/web build",
+    "typecheck": "pnpm --filter @open-im/contracts build && mvn -q -f apps/server/pom.xml -DskipTests compile && pnpm --filter @open-im/web typecheck",
+    "test": "mvn -q -f apps/server/pom.xml test && pnpm --filter @open-im/contracts test && pnpm --filter @open-im/web test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  }
+}

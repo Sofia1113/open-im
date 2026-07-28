@@ -1,0 +1,22 @@
+server:
+  address: ${HOST:127.0.0.1}
+  port: ${PORT:3001}
+
+spring:
+  application:
+    name: open-im-server
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+openim:
+  token-secret: ${TOKEN_SECRET:open-im-local-demo-secret-do-not-use-in-production}
+  demo-login-enabled: ${DEMO_LOGIN_ENABLED:true}
+  client-origin: ${CLIENT_ORIGIN:http://localhost:5173}

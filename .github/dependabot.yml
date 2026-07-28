@@ -1,0 +1,53 @@
+version: 2
+
+updates:
+  # Node / pnpm workspace
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # 补丁与次要版本合并成一个 PR，减少噪音
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - javascript
+
+  # Maven / Spring Boot 服务端
+  - package-ecosystem: maven
+    directory: /apps/server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - java
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+
+  # 容器基础镜像（Dockerfile 落地后自动生效）
+  - package-ecosystem: docker
+    directory: /apps/server
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker

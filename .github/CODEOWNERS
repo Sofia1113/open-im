@@ -1,0 +1,26 @@
+# 代码所有者
+#
+# 匹配规则按从上到下顺序应用，最后一条匹配的规则生效。
+# TODO: 将 @OWNER 替换为真实的 GitHub 用户名或团队（如 @your-org/backend）。
+
+# 默认所有者
+*                           @OWNER
+
+# 服务端
+/apps/server/               @OWNER
+
+# Web 客户端
+/apps/web/                  @OWNER
+
+# 共享契约：两端同时依赖，改动需要前后端共同评审
+/packages/contracts/        @OWNER
+
+# 安全与账务相关的关键路径，改动必须经过评审
+/apps/server/src/main/java/com/openim/server/auth/       @OWNER
+/apps/server/src/main/java/com/openim/server/domain/RedPacketAllocator.java  @OWNER
+/docs/02-features/SECURITY.md                            @OWNER
+
+# CI / 构建 / 部署配置
+/.github/                   @OWNER
+/pom.xml                    @OWNER
+/apps/server/pom.xml        @OWNER

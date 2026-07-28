@@ -1,0 +1,126 @@
+# 贡献指南
+
+## 环境要求
+
+| 工具 | 版本 | 说明 |
+| --- | --- | --- |
+| JDK | 21+ | 服务端以 Java 21 为编译目标 |
+| Maven | 3.9+ | 服务端构建 |
+| Node.js | 22+ | Web 客户端与契约包 |
+| pnpm | 10.12.4 | 由 `packageManager` 字段锁定，请勿混用 npm/yarn |
+
+## 本地启动
+
+```bash
+pnpm install
+pnpm dev          # 同时启动 Spring Boot (:3001) 与 Vite (:5173)
+```
+
+也可以分别启动：
+
+```bash
+pnpm dev:server
+pnpm dev:web
+```
+
+## 提交前必须通过
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+CI 会执行同样的命令，本地不通过不要提 PR。
+
+## 工程结构
+
+```text
+apps/web                 React + TypeScript + Vite 客户端
+apps/server              Java 21 + Spring Boot 3.5 服务端
+packages/contracts       两端共享的 TypeScript 协议类型
+docs                     PRD、架构、专项设计与验收文档
+```
+
+契约包 `packages/contracts` 被 Web 客户端直接依赖，服务端通过 Java Records + Bean Validation 实现同一套 JSON 契约。**改动任何字段都必须同时更新两侧**，否则会在运行时产生静默的契约漂移。
+
+## 分支与提交
+
+### 分支命名
+
+```text
+feat/<简短描述>      新功能
+fix/<简短描述>       缺陷修复
+refactor/<简短描述>  重构
+docs/<简短描述>      文档
+chore/<简短描述>     构建、CI、依赖
+```
+
+不要直接向 `main` 推送，所有变更走 PR。
+
+### 提交信息
+
+采用 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)：
+
+```text
+<type>(<scope>): <描述>
+
+[可选正文]
+
+[可选脚注]
+```
+
+`type` 取值：`feat` / `fix` / `docs` / `refactor` / `test` / `chore` / `perf` / `build` / `ci`。
+
+`scope` 建议使用模块名：`server` / `web` / `contracts` / `auth` / `message` / `call` / `wallet` / `docs`。
+
+示例：
+
+```text
+feat(wallet): 红包过期退款改为后台 Worker 驱动
+fix(realtime): 修正 WebSocket 断连后会话注册表未清理的问题
+```
+
+破坏性变更在脚注中声明 `BREAKING CHANGE: <说明>`，并同步更新 `CHANGELOG.md`。
+
+## 代码风格
+
+- **Java**：4 空格缩进，行宽 120。公开类和非平凡方法写 Javadoc，说明"为什么"而不是复述代码。
+- **TypeScript**：2 空格缩进。`tsconfig.base.json` 已开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`，不要用 `any` 或 `@ts-ignore` 绕过。
+- **注释与文档统一使用中文**，与现有代码保持一致。
+- 缩进与换行由 `.editorconfig` 约束，请确保编辑器已启用。
+
+## 测试要求
+
+参考 [ROADMAP.md §5 Definition of Done](./docs/00-product/ROADMAP.md)，一个功能被视为完成需要同时满足：
+
+- 产品规则、错误分支和权限已明确
+- API/事件契约已更新，客户端和服务端类型一致
+- 核心逻辑包含成功、失败、重试/并发测试
+- 日志不泄露令牌、消息敏感内容或完整账务信息
+- 用户可见的加载、空态、断线和错误状态已实现
+- README/运维说明足够让另一位开发者复现
+
+**涉及账务（钱包、红包）和鉴权的改动必须附带并发测试或权限边界测试**，这是项目风险最高的两条链路。
+
+## 安全要求
+
+提交前请对照 [SECURITY.md](./docs/02-features/SECURITY.md) 自检：
+
+- 每次访问会话、消息、通话或红包都以服务端成员关系为准，不信任客户端传入的角色。
+- 所有 HTTP/WebSocket DTO 经过 Bean Validation，并设置正文、数组、SDP/ICE 的大小上限。
+- 密钥、令牌不得写入仓库、前端包、镜像层或日志。
+- 金额一律使用整数（分），配合事务、唯一幂等键和不可变流水。
+
+发现安全问题请勿直接提 issue，按 [漏洞报告策略](./.github/SECURITY.md) 私下报告。
+
+## 当前阶段说明
+
+本仓库目前处于 **M1 演示 MVP** 阶段，使用内存仓储，禁止用于生产。
+正在推进的生产化改造顺序见 [ROADMAP.md](./docs/00-product/ROADMAP.md) 与 [IMPLEMENTATION_STATUS.md](./docs/03-delivery/IMPLEMENTATION_STATUS.md)。
+
+在演示架构上继续叠加功能之前，请先确认改动不会加深下列已知技术债：
+
+- `InMemoryStore` 的全局 `synchronized` 单锁
+- WebSocket 连接注册表位于 JVM 内存，阻塞多实例部署
+- 缺少限流、令牌撤销与可观测性

@@ -11,9 +11,12 @@ import com.openim.server.domain.service.CallService;
 import com.openim.server.domain.service.ConversationService;
 import com.openim.server.domain.service.MessageService;
 import com.openim.server.domain.service.UserService;
+import com.openim.server.observability.DomainMetrics;
 import com.openim.server.ratelimit.RateLimitPolicy;
 import com.openim.server.ratelimit.RateLimiter;
 import com.openim.server.web.ApiException;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import org.slf4j.Logger;
@@ -23,6 +26,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.PingMessage;
 import org.springframework.web.socket.PongMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -71,6 +75,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private final CallService callService;
     private final UserService userService;
     private final RateLimiter rateLimiter;
+    private final DomainMetrics metrics;
 
     /** 发送缓冲上限：超过说明客户端消费不过来，终止连接而不是继续堆积 */
     private final int sendBufferSizeLimit;
@@ -96,6 +101,8 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             CallService callService,
             UserService userService,
             RateLimiter rateLimiter,
+            DomainMetrics metrics,
+            MeterRegistry meterRegistry,
             @Value("${openim.realtime.send-buffer-size:524288}") int sendBufferSizeLimit,
             @Value("${openim.realtime.send-time-limit-millis:10000}") int sendTimeLimitMillis,
             @Value("${openim.realtime.pong-timeout-millis:90000}") long pongTimeoutMillis
@@ -107,9 +114,15 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         this.callService = callService;
         this.userService = userService;
         this.rateLimiter = rateLimiter;
+        this.metrics = metrics;
         this.sendBufferSizeLimit = sendBufferSizeLimit;
         this.sendTimeLimitMillis = sendTimeLimitMillis;
         this.pongTimeoutMillis = pongTimeoutMillis;
+        // 连接数在这里注册而不是放到 DomainMetrics 里，避免二者相互依赖
+        Gauge.builder("openim.realtime.connections", this,
+                        RealtimeWebSocketHandler::activeConnectionCount)
+                .description("当前活跃的 WebSocket 连接数")
+                .register(meterRegistry);
     }
 
     /** 连接建立时：注册到用户/设备/会话三级映射，标记用户在线 */
@@ -187,6 +200,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private void requireQuota(WebSocketSession session, RateLimitPolicy policy) {
         RateLimiter.Decision decision = rateLimiter.tryConsume(policy, "user:" + userId(session));
         if (!decision.allowed()) {
+            metrics.recordRateLimitRejection();
             throw new ApiException(
                     HttpStatus.TOO_MANY_REQUESTS,
                     "RATE_LIMITED",
@@ -353,6 +367,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
         } catch (IOException | IllegalStateException exception) {
             // IllegalStateException 来自装饰器：缓冲区超限或发送超时，连接已被它关闭
+            metrics.recordRealtimeSendFailure();
             log.warn("Unable to send realtime event sessionId={} reason={}",
                     session.getId(), exception.getClass().getSimpleName());
         }
@@ -376,7 +391,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             }
             try {
                 if (entry.session().isOpen()) {
-                    entry.session().sendMessage(new org.springframework.web.socket.PingMessage());
+                    entry.session().sendMessage(new PingMessage());
                 }
             } catch (IOException | IllegalStateException exception) {
                 closeQuietly(entry.session());

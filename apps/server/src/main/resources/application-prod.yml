@@ -22,15 +22,6 @@ spring:
     validate-on-migrate: true
     clean-disabled: true
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info
-  endpoint:
-    health:
-      show-details: never
-
 openim:
   demo-login-enabled: false
   client-origin: ${CLIENT_ORIGIN}
@@ -44,3 +35,24 @@ openim:
       #   3. 等待至少一个刷新令牌 TTL 后移除 k1
       # 这里不预置 k2，避免为占位一个空槽位而强行给它一个默认值。
       k1: ${TOKEN_SECRET}
+
+logging:
+  structured:
+    format:
+      # 生产输出结构化 JSON，便于日志系统直接索引字段而不是靠正则解析文本。
+      # MDC 中的 requestId/traceId/spanId 会自动成为独立字段。
+      console: ecs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db

@@ -4,9 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openim.server.domain.service.CallService;
 import com.openim.server.domain.service.ConversationService;
 import com.openim.server.domain.service.MessageService;
+import com.openim.server.domain.repository.OutboxRepository;
 import com.openim.server.domain.service.UserService;
+import com.openim.server.observability.DomainMetrics;
 import com.openim.server.ratelimit.RateLimiter;
 import com.openim.server.support.DemoUsers;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.validation.Validator;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
@@ -23,6 +27,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RealtimeWebSocketHandlerTest {
+    private final MeterRegistry registry = new SimpleMeterRegistry();
+
     @Test
     void isolatesTheSameDeviceIdAcrossDifferentUsers() throws Exception {
         ConversationService conversationService = mock(ConversationService.class);
@@ -35,6 +41,8 @@ class RealtimeWebSocketHandlerTest {
                 mock(CallService.class),
                 mock(UserService.class),
                 new RateLimiter(true, 1_000, 30),
+                new DomainMetrics(registry, mock(OutboxRepository.class)),
+                registry,
                 512 * 1024,
                 10_000,
                 90_000

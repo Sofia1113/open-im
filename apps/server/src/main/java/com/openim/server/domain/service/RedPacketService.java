@@ -16,6 +16,7 @@ import com.openim.server.domain.repository.RedPacketRepository;
 import com.openim.server.domain.repository.RedPacketRepository.RedPacketRow;
 import com.openim.server.domain.repository.RedPacketRepository.ShareRow;
 import com.openim.server.domain.repository.WalletRepository;
+import com.openim.server.observability.DomainMetrics;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -47,6 +48,7 @@ public class RedPacketService {
     private final ConversationService conversationService;
     private final RedPacketAllocator allocator;
     private final OutboxRepository outboxRepository;
+    private final DomainMetrics metrics;
 
     public RedPacketService(
             RedPacketRepository redPacketRepository,
@@ -55,7 +57,8 @@ public class RedPacketService {
             ConversationRepository conversationRepository,
             ConversationService conversationService,
             RedPacketAllocator allocator,
-            OutboxRepository outboxRepository
+            OutboxRepository outboxRepository,
+            DomainMetrics metrics
     ) {
         this.redPacketRepository = redPacketRepository;
         this.walletRepository = walletRepository;
@@ -64,6 +67,7 @@ public class RedPacketService {
         this.conversationService = conversationService;
         this.allocator = allocator;
         this.outboxRepository = outboxRepository;
+        this.metrics = metrics;
     }
 
     @Transactional(readOnly = true)
@@ -138,6 +142,7 @@ public class RedPacketService {
 
         outboxRepository.append("red_packet", packetId, "red_packet:created",
                 Map.of("redPacketId", packetId.toString(), "conversationId", conversationId.toString()));
+        metrics.recordRedPacketCreated();
 
         return new CreatedRedPacket(
                 redPacketRepository.findById(packetId).orElseThrow(),
@@ -223,6 +228,7 @@ public class RedPacketService {
         redPacketRepository.applyClaim(packetId, share.amount());
         outboxRepository.append("red_packet", packetId, "red_packet:claimed",
                 Map.of("redPacketId", packetId.toString(), "userId", userId.toString()));
+        metrics.recordRedPacketClaimed();
 
         return new ClaimedRedPacket(
                 redPacketRepository.findById(packetId).orElseThrow(),
@@ -290,6 +296,7 @@ public class RedPacketService {
         redPacketRepository.updateStatus(row.id(), "refunded");
         outboxRepository.append("red_packet", row.id(), "red_packet:refunded",
                 Map.of("redPacketId", row.id().toString(), "amount", remaining));
+        metrics.recordRedPacketRefunded();
         return true;
     }
 

@@ -1,9 +1,10 @@
-# 本地开发依赖
+# 本地开发与整体验证
 #
-# 启动：docker compose up -d
-# 停止并清空数据：docker compose down -v
+#   docker compose up -d postgres      仅启动数据库（配合 pnpm dev 在宿主机跑服务端）
+#   docker compose --profile full up -d --build   连同服务端一起以容器方式运行
+#   docker compose down -v             停止并清空数据
 #
-# 服务端默认连接 jdbc:postgresql://127.0.0.1:5432/openim（见 application.yml）。
+# 宿主机直接运行服务端时连接 jdbc:postgresql://127.0.0.1:5432/openim（见 application.yml）。
 
 services:
   postgres:
@@ -26,6 +27,36 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    restart: unless-stopped
+
+  server:
+    # 仅在显式指定 profile 时启动，避免干扰"数据库用容器、服务端用 pnpm dev"的日常开发方式
+    profiles: ["full"]
+    build:
+      context: ./apps/server
+      dockerfile: Dockerfile
+    container_name: openim-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3001
+      DATABASE_URL: jdbc:postgresql://postgres:5432/openim
+      DATABASE_USER: openim
+      DATABASE_PASSWORD: openim
+      CLIENT_ORIGIN: http://localhost:5173
+      # 本地编排使用的占位密钥；生产必须由密钥管理系统注入
+      TOKEN_SECRET: local-compose-secret-with-more-than-32-characters
+      TZ: UTC
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/actuator/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 40s
     restart: unless-stopped
 
 volumes:

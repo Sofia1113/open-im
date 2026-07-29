@@ -1,0 +1,13 @@
+target/
+.mvn/
+*.iml
+.idea/
+.DS_Store
+*.log
+# 密钥绝不能进入镜像层：镜像层是可被任何拉取者读取的
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks

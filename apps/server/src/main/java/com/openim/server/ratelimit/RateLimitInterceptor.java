@@ -3,6 +3,7 @@ package com.openim.server.ratelimit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.openim.server.auth.AuthPrincipal;
+import com.openim.server.observability.DomainMetrics;
 import com.openim.server.web.RequestIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -25,10 +26,16 @@ public class RateLimitInterceptor implements HandlerInterceptor {
 
     private final RateLimiter rateLimiter;
     private final ObjectMapper objectMapper;
+    private final DomainMetrics metrics;
 
-    public RateLimitInterceptor(RateLimiter rateLimiter, ObjectMapper objectMapper) {
+    public RateLimitInterceptor(
+            RateLimiter rateLimiter,
+            ObjectMapper objectMapper,
+            DomainMetrics metrics
+    ) {
         this.rateLimiter = rateLimiter;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
     }
 
     @Override
@@ -52,6 +59,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             return true;
         }
 
+        metrics.recordRateLimitRejection();
         // 只记录限流键的类别，不记录完整 IP（见 SECURITY.md §9 对日志的要求）
         log.warn("Rate limit exceeded path={} method={}",
                 request.getRequestURI(), request.getMethod());

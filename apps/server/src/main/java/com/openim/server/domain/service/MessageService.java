@@ -5,6 +5,7 @@ import com.openim.server.domain.Requests.SendMessage;
 import com.openim.server.domain.repository.ConversationRepository;
 import com.openim.server.domain.repository.MessageRepository;
 import com.openim.server.domain.repository.OutboxRepository;
+import com.openim.server.observability.DomainMetrics;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,17 +29,20 @@ public class MessageService {
     private final ConversationRepository conversationRepository;
     private final ConversationService conversationService;
     private final OutboxRepository outboxRepository;
+    private final DomainMetrics metrics;
 
     public MessageService(
             MessageRepository messageRepository,
             ConversationRepository conversationRepository,
             ConversationService conversationService,
-            OutboxRepository outboxRepository
+            OutboxRepository outboxRepository,
+            DomainMetrics metrics
     ) {
         this.messageRepository = messageRepository;
         this.conversationRepository = conversationRepository;
         this.conversationService = conversationService;
         this.outboxRepository = outboxRepository;
+        this.metrics = metrics;
     }
 
     @Transactional(readOnly = true)
@@ -101,6 +105,7 @@ public class MessageService {
         conversationRepository.updateSummary(conversationId, text, sentAt);
         outboxRepository.append("conversation", conversationId, "message:created",
                 Map.of("messageId", message.id(), "seq", seq));
+        metrics.recordMessageSent();
         return message;
     }
 

@@ -13,7 +13,7 @@
 | 2 | PostgreSQL 持久化与领域服务拆分 | ✅ 完成 |
 | 3 | 认证体系（标准 JWT、刷新轮换、撤销） | ✅ 完成 |
 | 4 | 限流、安全响应头、WebSocket 健壮性 | ✅ 完成 |
-| 5 | 容器化与可观测性 | ⬜ 未开始 |
+| 5 | 容器化与可观测性 | ✅ 完成 |
 | 6 | 测试补强与 CI 安全门禁 | ⬜ 未开始 |
 
 ## 已完成
@@ -30,6 +30,8 @@
 | 限流 | 登录/刷新/发消息/信令/呼叫/发红包/领红包分策略配额；已认证按 userId、未认证按 IP；WebSocket 命令单独限流 |
 | 安全响应头 | CSP、X-Content-Type-Options、X-Frame-Options、Referrer-Policy、Permissions-Policy、no-store；HSTS 仅生产下发 |
 | 实时连接 | 发送队列背压（替代同步阻塞写）、应用层心跳与半开连接清理、容器帧上限与业务信令上限对齐 |
+| 容器化 | 三阶段 Dockerfile（分层提取、非 root、只读根文件系统兼容）、compose 编排、K8s 清单（存活/就绪/启动三探针分离） |
+| 可观测性 | Prometheus 指标（含 9 项业务指标）、requestId 与 traceId 进入 MDC、生产输出 ECS 结构化 JSON 日志 |
 | 会话 | 单聊/群聊、成员权限、会话摘要与历史消息；未读数由已读游标推导 |
 | 消息 | 原生 WebSocket JSON 命令/事件/ACK、客户端幂等键（数据库唯一约束兜底）、会话级 `seq`、100 条升序分页补拉 |
 | 多端 | 用户房间/设备房间、同账号多连接事件扇出、其他设备停止响铃 |
@@ -64,7 +66,6 @@
 
 - Redis、跨实例 WebSocket 广播与 Outbox 消费端。
 - 分布式限流（当前配额按实例独立计算，N 个实例的实际总配额是 N 倍）。
-- Micrometer 指标、OpenTelemetry 链路、结构化日志。
 - 好友申请、群成员完整管理、撤回、置顶、免打扰。
 - 图片/文件对象存储、语音消息、搜索与离线推送。
 - TURN/SFU、屏幕共享、移动端和 Electron 客户端。
@@ -73,11 +74,23 @@
 
 ## 验证记录
 
-本轮（持久化改造）已执行：
+本轮（容器化与可观测性）已执行：
 
-- `pnpm typecheck`：Spring Boot 编译、Web 客户端和 TypeScript 契约通过。
-- `pnpm test`：Java 集成测试基于 Testcontainers 真实 PostgreSQL 运行。
-- `pnpm build`：Spring Boot 可执行 JAR、TypeScript 契约和 Web 生产构建通过。
+- `pnpm typecheck` / `pnpm test`（44 个 Java 测试）/ `pnpm build` 全部通过。
+- `docker compose --profile full up -d --build`：镜像构建成功，就绪探针转为 healthy。
+- **容器化端到端冒烟**（首次真实链路验证，非仅单元测试）：
+  - 探针分离：`/actuator/health/liveness` 与 `/readiness` 各自返回 UP
+  - 安全头：CSP / nosniff / DENY / no-referrer / Permissions-Policy / no-store 均下发，非生产环境不下发 HSTS
+  - 登录签发标准 JWT（三段式，头部含 `kid=k1`、`alg=HS256`）
+  - 会话列表未读数由已读游标正确推导（群聊显示 2）
+  - 红包全链路：发放 → 幂等重发不重复扣款 → 领取 → 状态 `exhausted`
+  - 越权拦截：非会话成员领取返回 403 `NOT_A_MEMBER`
+  - 刷新令牌轮换生效；宽限期内重放旧令牌被放行（多标签页容忍）
+  - 登出后访问令牌立即失效（HTTP 401），而非等待自然过期
+  - 登录限流在配额耗尽后返回 429 并带 `Retry-After`
+  - **账务对账：借贷不平衡交易数 0，全部账户余额之和恒为 150000 分，托管账户归零**
+  - 日志携带 `[应用名, traceId, spanId, requestId]`，可端到端关联
+  - **容器重启后钱包余额保持 49900/50100，数据确实持久化**
 
 上一轮（M1 MVP）验证记录：
 

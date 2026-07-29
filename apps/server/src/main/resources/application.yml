@@ -30,12 +30,29 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
   endpoint:
     health:
       probes:
+        # 分离存活与就绪探针：存活失败应重启容器，就绪失败只应摘除流量。
+        # 用同一个端点做两件事会导致数据库短暂不可用时容器被反复重启。
         enabled: true
       show-details: when-authorized
+      group:
+        readiness:
+          # 数据库不可用时不应继续接收流量
+          include: readinessState,db
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  observations:
+    key-values:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      # 全量采样。未配置 OTLP endpoint 时 span 不会导出，
+      # 但 traceId/spanId 会进入日志，使一次请求的多条日志可以串起来。
+      probability: 1.0
 
 openim:
   demo-login-enabled: ${DEMO_LOGIN_ENABLED:true}
@@ -71,3 +88,9 @@ openim:
     enabled: ${RATE_LIMIT_ENABLED:true}
     max-tracked-keys: 100000
     key-ttl-minutes: 30
+
+logging:
+  pattern:
+    # 本地开发用可读格式，并带上 requestId 与链路 ID
+    correlation: "[${spring.application.name},%X{traceId:-},%X{spanId:-},%X{requestId:-}] "
+  include-application-name: false

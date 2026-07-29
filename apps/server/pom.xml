@@ -42,6 +42,19 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- 可观测性：Prometheus 指标 + 分布式链路上下文。
+             即使暂不部署 OTLP collector，tracing bridge 也会把 traceId/spanId
+             注入日志，使一次请求在各条日志之间可关联。 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
         <!-- 持久化：JdbcClient + HikariCP。
              选择 JDBC 而非 JPA 的原因见 docs/01-architecture/ARCHITECTURE.md：
              红包领取依赖 SELECT ... FOR UPDATE SKIP LOCKED 和条件更新，

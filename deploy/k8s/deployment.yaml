@@ -1,0 +1,154 @@
+# OpenIM 服务端部署清单
+#
+# 前置：
+#   kubectl create secret generic openim-secrets \
+#     --from-literal=token-secret='<至少 32 字符的随机密钥>' \
+#     --from-literal=database-password='<数据库密码>'
+#
+# 注意：当前版本仍有阻碍多副本的状态——WebSocket 连接注册表和限流配额都在
+# JVM 内存中。replicas 设为 1，接入 Redis 之前不要上调（见 README「当前边界」）。
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openim-server
+  labels:
+    app: openim-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openim-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: openim-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "3001"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: server
+          image: openim-server:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              value: jdbc:postgresql://postgres:5432/openim
+            - name: DATABASE_USER
+              value: openim
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openim-secrets
+                  key: database-password
+            - name: TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: openim-secrets
+                  key: token-secret
+            - name: CLIENT_ORIGIN
+              value: https://im.example.com
+
+          # 存活探针只反映进程是否卡死。它不包含数据库检查——
+          # 否则数据库短暂抖动会引发容器被反复重启，把一次可恢复的故障放大成雪崩。
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 3
+
+          # 就绪探针包含数据库：依赖不可用时摘除流量，但保留进程
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # 启动探针给足冷启动时间（Flyway 迁移 + 连接池预热），
+          # 使 livenessProbe 的阈值不必为了迁就启动而放宽
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              # 不设 CPU 上限：CPU 节流会让 GC 和请求处理一起变慢，
+              # 内存才是需要硬限制的资源
+              memory: 1Gi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      # 只读根文件系统下 JVM 仍需要可写的临时目录
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      # 优雅停机：配合 server.shutdown=graceful，让在途请求和 WebSocket 连接有时间收尾
+      terminationGracePeriodSeconds: 45
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openim-server
+  labels:
+    app: openim-server
+spec:
+  type: ClusterIP
+  selector:
+    app: openim-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openim-server
+spec:
+  # replicas=1 时该预算会阻止自愿驱逐。接入 Redis 支持多副本后
+  # 应把 replicas 调到 ≥2，这条约束才开始真正提供可用性保障。
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: openim-server

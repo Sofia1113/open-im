@@ -82,6 +82,21 @@ pnpm test
 pnpm build
 ```
 
+### 以容器方式运行全栈
+
+```bash
+docker compose --profile full up -d --build
+```
+
+服务端会连同 PostgreSQL 一起启动，就绪后可访问：
+
+- 健康检查：`http://127.0.0.1:3001/actuator/health`
+- 存活探针：`http://127.0.0.1:3001/actuator/health/liveness`
+- 就绪探针：`http://127.0.0.1:3001/actuator/health/readiness`
+- 指标：`http://127.0.0.1:3001/actuator/prometheus`
+
+Kubernetes 清单见 [`deploy/k8s/deployment.yaml`](./deploy/k8s/deployment.yaml)。
+
 ### 运行编译产物
 
 ```bash
@@ -134,7 +149,7 @@ pnpm --filter @open-im/web preview
 - **多实例**：WebSocket 连接注册表仍在 JVM 内存中，起第二个实例会丢消息，需要 Redis Pub/Sub 或 MQ 扇出。Outbox 表已就绪但尚未驱动推送。
 - **限流**：已按动作分策略限流，但配额是进程内的——多实例部署时实际总配额会翻倍，需换成 Redis 后端。
 - **密钥管理**：JWT 支持多密钥轮换，但密钥仍来自环境变量，未接入 KMS/Secret Manager。
-- **可观测性**：只有 health/info 端点，无指标、链路和结构化日志。
+- **链路导出**：已生成 traceId/spanId 并注入日志，但未配置 OTLP collector，span 不对外导出。
 - **音视频**：WebRTC 使用 Mesh 和公共 STUN，未部署 TURN/SFU。
 - **客户端**：已实现 Web；Electron、iOS、Android 通过共享契约后续接入。
 - **功能**：附件、离线推送、消息撤回、群成员管理和管理后台列入 M2。

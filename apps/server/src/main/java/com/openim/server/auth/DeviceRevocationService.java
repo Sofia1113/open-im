@@ -2,6 +2,7 @@ package com.openim.server.auth;
 
 import com.openim.server.domain.repository.AuditRepository;
 import com.openim.server.domain.repository.DeviceRepository;
+import com.openim.server.observability.DomainMetrics;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,13 +23,16 @@ import java.util.UUID;
 public class DeviceRevocationService {
     private final DeviceRepository deviceRepository;
     private final AuditRepository auditRepository;
+    private final DomainMetrics metrics;
 
     public DeviceRevocationService(
             DeviceRepository deviceRepository,
-            AuditRepository auditRepository
+            AuditRepository auditRepository,
+            DomainMetrics metrics
     ) {
         this.deviceRepository = deviceRepository;
         this.auditRepository = auditRepository;
+        this.metrics = metrics;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -36,5 +40,6 @@ public class DeviceRevocationService {
         deviceRepository.revoke(deviceId, "token_reuse");
         auditRepository.recordUserAction(userId, "auth.token_reuse_detected",
                 Map.of("deviceId", deviceId));
+        metrics.recordTokenReuseDetected();
     }
 }

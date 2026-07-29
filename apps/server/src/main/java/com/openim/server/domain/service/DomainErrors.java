@@ -36,6 +36,16 @@ public final class DomainErrors {
     }
 
     /**
+     * 未认证。
+     *
+     * 统一使用 AUTH_REQUIRED 错误码：客户端据此触发刷新或跳转登录，
+     * 且不向调用方区分"签名无效"与"会话已撤销"，避免泄漏鉴权内部状态。
+     */
+    public static ApiException unauthorized(String message) {
+        return new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_REQUIRED", message);
+    }
+
+    /**
      * 把外部传入的 ID 字符串解析为 UUID。
      *
      * 格式非法一律按"资源不存在"处理，而不是返回参数错误：避免攻击者通过区分

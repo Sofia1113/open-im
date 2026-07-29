@@ -19,6 +19,8 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- Spring Boot BOM 不管理该依赖（它由 Spring Security BOM 提供），需显式声明版本 -->
+        <nimbus-jose-jwt.version>10.3</nimbus-jose-jwt.version>
     </properties>
 
     <dependencies>
@@ -59,6 +61,14 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- 标准 JWT 签发与验证。用成熟实现替代自研的 HMAC+Base64 拼接，
+             以获得 kid 密钥轮换、算法约束和规范的声明校验。 -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>${nimbus-jose-jwt.version}</version>
         </dependency>
 
         <dependency>

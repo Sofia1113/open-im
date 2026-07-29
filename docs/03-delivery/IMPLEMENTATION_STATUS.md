@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | 1 | git 基线与仓库治理 | ✅ 完成 |
 | 2 | PostgreSQL 持久化与领域服务拆分 | ✅ 完成 |
-| 3 | 认证体系（标准 JWT、刷新轮换、撤销） | ⬜ 未开始 |
+| 3 | 认证体系（标准 JWT、刷新轮换、撤销） | ✅ 完成 |
 | 4 | 限流、安全响应头、WebSocket 健壮性 | ⬜ 未开始 |
 | 5 | 容器化与可观测性 | ⬜ 未开始 |
 | 6 | 测试补强与 CI 安全门禁 | ⬜ 未开始 |
@@ -25,7 +25,8 @@
 | 持久化 | PostgreSQL + Flyway 迁移；`users`/`conversations`/`messages`/`wallet_*`/`red_packet_*`/`call_*`/`outbox_events`/`audit_logs` 全量建表 |
 | 数据访问 | JdbcClient Repository 层；`UPDATE ... RETURNING` 分配会话序号，`FOR UPDATE SKIP LOCKED` 抢占红包份额 |
 | 领域分层 | `InMemoryStore` 单类 907 行拆为 6 个领域服务 + 6 个 Repository，全局 `synchronized` 单锁移除 |
-| 认证 | 三个演示账号（按 username 登录）、HMAC 签名访问/刷新令牌、Spring MVC/WebSocket 鉴权 |
+| 认证 | 标准 JWT（JWS/HS256）、`kid` 多密钥轮换、刷新令牌轮换与重放检测、设备撤销与远程下线、登录/刷新/撤销审计 |
+| 客户端会话 | 访问令牌临近过期主动刷新、401 被动刷新重试、single-flight 防并发刷新、WebSocket 握手取最新令牌 |
 | 会话 | 单聊/群聊、成员权限、会话摘要与历史消息；未读数由已读游标推导 |
 | 消息 | 原生 WebSocket JSON 命令/事件/ACK、客户端幂等键（数据库唯一约束兜底）、会话级 `seq`、100 条升序分页补拉 |
 | 多端 | 用户房间/设备房间、同账号多连接事件扇出、其他设备停止响铃 |
@@ -50,7 +51,8 @@
 | 可靠事件 | `outbox_events` 表与写入路径已就绪，领域变更与事件同事务落库 | 接 Redis Pub/Sub 驱动跨实例推送，取代当前的进程内直接扇出 |
 | 多实例部署 | 数据层已无状态化 | WebSocket 连接注册表仍在 JVM 内存，需迁移到 Redis 并配置粘性路由 |
 | 断线恢复 | 指数退避重连；按各会话本地最大 `seq` 分页补拉并去重合并 | 同步水位持久化、缺口指标和跨实例恢复测试 |
-| 设备会话 | 令牌含 `deviceId`，`devices` 表已建 | 刷新令牌轮换写入、撤销表与远程下线接口 |
+| 设备会话 | 刷新令牌轮换 + 宽限期 + 重放检测；`DELETE /api/v1/sessions/current` 与 `/sessions` 支持单设备与全设备下线 | 设备列表接口、管理员强制下线、过期设备记录清理任务 |
+| 密钥管理 | 支持多密钥并存与 `kid` 轮换，配置校验在启动时拒绝弱密钥 | 接入 KMS/Secret Manager，实现自动轮换而非手工切换环境变量 |
 | 红包风控 | 金额整数化、数据库 CHECK 约束、唯一幂等键、不可变流水 | 限额策略、冻结、审计查询与定时对账任务 |
 | 通话弱网 | ICE candidate、连接失败提示 | ICE restart、质量 stats、TURN |
 | 多人通话 | 最多 6 人 Mesh 契约与 Peer 管理 | 多浏览器矩阵压测；生产接 SFU |
@@ -58,7 +60,6 @@
 ## 尚未实现（M2/M3）
 
 - Redis、跨实例 WebSocket 广播与 Outbox 消费端。
-- 标准 JWT 密钥轮换、刷新令牌撤销、客户端自动刷新。
 - 全链路限流、CSP/HSTS 等安全响应头。
 - Micrometer 指标、OpenTelemetry 链路、结构化日志。
 - 好友申请、群成员完整管理、撤回、置顶、免打扰。

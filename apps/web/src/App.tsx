@@ -21,10 +21,12 @@ import {
 import {
   API_URL,
   apiRequest,
-  clearSession,
   getDeviceId,
-  readSession,
-  saveSession,
+  getFreshAccessToken,
+  getSession,
+  logout,
+  setSession,
+  subscribeSession,
 } from "./api";
 import { RealtimeClient } from "./realtime";
 import {
@@ -52,25 +54,21 @@ const currency = new Intl.NumberFormat("zh-CN", {
  * - 检查本地缓存的会话，有则进入工作台，无则展示登录页
  */
 export function App() {
-  const [session, setSession] = useState<Session | null>(() => readSession());
+  const [session, setSessionState] = useState<Session | null>(() => getSession());
+
+  // 令牌刷新和会话失效都发生在 api 模块内部，订阅它才能让界面跟随变化，
+  // 例如刷新令牌被服务端撤销后自动退回登录页
+  useEffect(() => subscribeSession(setSessionState), []);
 
   if (!session) {
-    return (
-      <LoginScreen
-        onLogin={(nextSession) => {
-          saveSession(nextSession);
-          setSession(nextSession);
-        }}
-      />
-    );
+    return <LoginScreen onLogin={(nextSession) => setSession(nextSession)} />;
   }
 
   return (
     <Workspace
       session={session}
       onLogout={() => {
-        clearSession();
-        setSession(null);
+        void logout(session);
       }}
     />
   );
@@ -280,7 +278,7 @@ function Workspace({
   useEffect(() => {
     const realtime = new RealtimeClient(
       API_URL,
-      session.accessToken,
+      getFreshAccessToken,
       getDeviceId(),
     );
     setSocket(realtime);

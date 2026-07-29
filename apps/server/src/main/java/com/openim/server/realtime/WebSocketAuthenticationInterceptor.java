@@ -1,7 +1,7 @@
 package com.openim.server.realtime;
 
 import com.openim.server.auth.TokenService;
-import com.openim.server.domain.service.UserService;
+import com.openim.server.domain.repository.DeviceRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -25,11 +25,14 @@ public class WebSocketAuthenticationInterceptor implements HandshakeInterceptor 
     public static final String DEVICE_ID = "openim.deviceId";
 
     private final TokenService tokenService;
-    private final UserService userService;
+    private final DeviceRepository deviceRepository;
 
-    public WebSocketAuthenticationInterceptor(TokenService tokenService, UserService userService) {
+    public WebSocketAuthenticationInterceptor(
+            TokenService tokenService,
+            DeviceRepository deviceRepository
+    ) {
         this.tokenService = tokenService;
-        this.userService = userService;
+        this.deviceRepository = deviceRepository;
     }
 
     @Override
@@ -57,7 +60,7 @@ public class WebSocketAuthenticationInterceptor implements HandshakeInterceptor 
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }
-        if (!userService.isActiveUser(userId)) {
+        if (!deviceRepository.isSessionActive(deviceId, userId)) {
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }

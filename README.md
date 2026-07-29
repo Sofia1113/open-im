@@ -132,8 +132,8 @@ pnpm --filter @open-im/web preview
 数据已持久化到 PostgreSQL，账务使用复式记账。剩余距离生产的差距：
 
 - **多实例**：WebSocket 连接注册表仍在 JVM 内存中，起第二个实例会丢消息，需要 Redis Pub/Sub 或 MQ 扇出。Outbox 表已就绪但尚未驱动推送。
-- **认证**：令牌为自实现的 HMAC 签名，缺少标准 JWT 的密钥轮换、刷新令牌轮换与撤销表；客户端未接入自动刷新。
 - **防护**：登录、发消息、呼叫、信令和红包均未限流；缺少 CSP/HSTS 等安全响应头。
+- **密钥管理**：JWT 支持多密钥轮换，但密钥仍来自环境变量，未接入 KMS/Secret Manager。
 - **可观测性**：只有 health/info 端点，无指标、链路和结构化日志。
 - **音视频**：WebRTC 使用 Mesh 和公共 STUN，未部署 TURN/SFU。
 - **客户端**：已实现 Web；Electron、iOS、Android 通过共享契约后续接入。

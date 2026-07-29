@@ -58,16 +58,21 @@ export class RealtimeClient {
   private reconnectAttempts = 0;
   private reconnectTimer: number | null = null;
 
+  /**
+   * @param tokenProvider 每次握手时取一次访问令牌。
+   *   访问令牌只有 15 分钟有效期，构造时固定下来会导致长时间断线后
+   *   带着早已过期的令牌反复重连失败；由调用方在这里返回（必要时刷新过的）最新令牌。
+   */
   constructor(
     private readonly apiUrl: string,
-    private readonly token: string,
+    private readonly tokenProvider: () => Promise<string | null>,
     private readonly deviceId: string,
   ) {}
 
   /** 建立 WebSocket 连接 */
   connect(): void {
     this.manuallyClosed = false;
-    this.openSocket();
+    void this.openSocket();
   }
 
   /** 手动关闭连接，取消重连调度 */
@@ -138,19 +143,42 @@ export class RealtimeClient {
     }));
   }
 
-  /** 创建 WebSocket 连接并绑定事件处理 */
-  private openSocket(): void {
+  /**
+   * 创建 WebSocket 连接并绑定事件处理。
+   *
+   * 永不向外抛出：调用方以 fire-and-forget 方式触发它，
+   * 未捕获的 rejection 会中断重连链路。
+   */
+  private async openSocket(): Promise<void> {
     if (
       this.socket?.readyState === WebSocket.OPEN ||
       this.socket?.readyState === WebSocket.CONNECTING
     ) {
       return;
     }
+
+    let token: string | null;
+    try {
+      token = await this.tokenProvider();
+    } catch {
+      this.dispatch("connect_error", new Error("实时连接失败"));
+      if (!this.manuallyClosed) this.scheduleReconnect();
+      return;
+    }
+
+    if (token === null) {
+      // 会话已失效：继续重连只会不断收到 401，交由上层引导重新登录
+      this.dispatch("connect_error", new Error("登录已失效，请重新登录"));
+      return;
+    }
+    // 取令牌是异步的，期间可能已被 disconnect() 取消
+    if (this.manuallyClosed) return;
+
     const url = new URL(this.apiUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = "/ws";
     url.search = new URLSearchParams({
-      token: this.token,
+      token,
       deviceId: this.deviceId,
     }).toString();
     const socket = new WebSocket(url);
@@ -217,7 +245,7 @@ export class RealtimeClient {
   private scheduleReconnect(): void {
     const delay = Math.min(30_000, 1_000 * 2 ** this.reconnectAttempts);
     this.reconnectAttempts += 1;
-    this.reconnectTimer = window.setTimeout(() => this.openSocket(), delay);
+    this.reconnectTimer = window.setTimeout(() => void this.openSocket(), delay);
   }
 
   /** 拒绝所有待处理命令（连接断开时调用） */

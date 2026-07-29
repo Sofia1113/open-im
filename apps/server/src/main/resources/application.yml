@@ -38,6 +38,19 @@ management:
       show-details: when-authorized
 
 openim:
-  token-secret: ${TOKEN_SECRET:open-im-local-demo-secret-do-not-use-in-production}
   demo-login-enabled: ${DEMO_LOGIN_ENABLED:true}
   client-origin: ${CLIENT_ORIGIN:http://localhost:5173}
+
+  jwt:
+    issuer: open-im
+    # 访问令牌短期有效，配合客户端自动刷新；撤销最迟在这个时长内生效
+    access-token-ttl-seconds: ${ACCESS_TOKEN_TTL:900}
+    refresh-token-ttl-seconds: ${REFRESH_TOKEN_TTL:604800}
+    # 刚被轮换掉的刷新令牌在此窗口内仍可交换一次，
+    # 用于容忍多标签页并发刷新和网络重试；超出窗口则判定为重放并撤销设备。
+    refresh-grace-seconds: ${REFRESH_GRACE_SECONDS:60}
+    # 签发使用的密钥 ID。轮换步骤：先在 keys 中加入新密钥，
+    # 再把 active-key-id 切过去，等旧令牌过期后移除旧密钥。
+    active-key-id: ${JWT_ACTIVE_KEY_ID:k1}
+    keys:
+      k1: ${TOKEN_SECRET:open-im-local-demo-secret-do-not-use-in-production}

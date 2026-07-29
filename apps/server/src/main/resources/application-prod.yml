@@ -33,5 +33,14 @@ management:
 
 openim:
   demo-login-enabled: false
-  token-secret: ${TOKEN_SECRET}
   client-origin: ${CLIENT_ORIGIN}
+
+  jwt:
+    active-key-id: ${JWT_ACTIVE_KEY_ID:k1}
+    keys:
+      # 轮换步骤：
+      #   1. 注入环境变量 OPENIM_JWT_KEYS_K2=<新密钥>（此时它只用于验证）
+      #   2. 把 JWT_ACTIVE_KEY_ID 切到 k2，新令牌开始用新密钥签发
+      #   3. 等待至少一个刷新令牌 TTL 后移除 k1
+      # 这里不预置 k2，避免为占位一个空槽位而强行给它一个默认值。
+      k1: ${TOKEN_SECRET}

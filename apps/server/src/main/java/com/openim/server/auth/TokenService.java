@@ -1,102 +1,127 @@
 package com.openim.server.auth;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.openim.server.config.ProductionProfile;
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.JWSVerifier;
+import com.nimbusds.jose.crypto.MACSigner;
+import com.nimbusds.jose.crypto.MACVerifier;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.Base64;
+import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Token 签发与验证服务
- * 使用 HMAC-SHA256 对 JSON 负载签名，生成 access_token 和 refresh_token。
+ * JWT 签发与验证
+ *
+ * 使用标准 JWS（HS256）替代此前自研的 Base64+HMAC 拼接实现，以获得三项能力：
+ * 令牌头部携带 {@code kid} 从而支持无停机密钥轮换、算法在验证时被显式约束
+ * （拒绝 {@code alg=none} 与非对称降级攻击）、以及 {@code jti} 唯一标识用于撤销与审计。
+ *
+ * 令牌类型放在私有声明 {@code tt} 中，验证时强制匹配，
+ * 避免刷新令牌被当作访问令牌直接使用。
  */
 @Service
 public class TokenService {
-    private static final Base64.Encoder ENCODER = Base64.getUrlEncoder().withoutPadding();
-    private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
+    private static final Logger log = LoggerFactory.getLogger(TokenService.class);
 
-    private final ObjectMapper objectMapper;
-    private final byte[] secret;
+    private static final JWSAlgorithm ALGORITHM = JWSAlgorithm.HS256;
+    private static final String CLAIM_TOKEN_TYPE = "tt";
+    private static final String CLAIM_DEVICE_ID = "did";
 
-    public TokenService(
-            ObjectMapper objectMapper,
-            @Value("${openim.token-secret}") String secret,
-            ProductionProfile productionProfile
-    ) {
-        if (secret == null || secret.length() < 32) {
-            throw new IllegalStateException("TOKEN_SECRET must contain at least 32 characters");
-        }
-        if (productionProfile.active() && secret.contains("do-not-use-in-production")) {
-            throw new IllegalStateException("The local demo TOKEN_SECRET cannot be used in production");
-        }
-        this.objectMapper = objectMapper;
-        this.secret = secret.getBytes(StandardCharsets.UTF_8);
+    /** 允许的时钟偏移，避免多实例之间的轻微不同步导致刚签发的令牌被拒 */
+    private static final long CLOCK_SKEW_SECONDS = 30;
+
+    private final JwtKeySet keySet;
+    private final String issuer;
+
+    public TokenService(JwtKeySet keySet, @Value("${openim.jwt.issuer:open-im}") String issuer) {
+        keySet.validate();
+        this.keySet = keySet;
+        this.issuer = issuer;
     }
 
-    public IssuedToken issue(
-            String userId,
-            String deviceId,
-            String type,
-            long ttlSeconds
-    ) {
+    public IssuedToken issue(String userId, String deviceId, String type, long ttlSeconds) {
+        Instant now = Instant.now();
+        Instant expiresAt = now.plusSeconds(ttlSeconds);
+        String tokenId = UUID.randomUUID().toString();
         try {
-            Instant expiresAt = Instant.now().plusSeconds(ttlSeconds);
-            TokenPayload payload = new TokenPayload(
-                    userId,
-                    deviceId,
-                    type,
-                    expiresAt.getEpochSecond(),
-                    UUID.randomUUID().toString()
-            );
-            String encoded = ENCODER.encodeToString(objectMapper.writeValueAsBytes(payload));
-            String signature = ENCODER.encodeToString(sign(encoded));
-            return new IssuedToken(encoded + "." + signature, expiresAt);
-        } catch (Exception exception) {
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                    .issuer(issuer)
+                    .subject(userId)
+                    .jwtID(tokenId)
+                    .issueTime(Date.from(now))
+                    .expirationTime(Date.from(expiresAt))
+                    .claim(CLAIM_TOKEN_TYPE, type)
+                    .claim(CLAIM_DEVICE_ID, deviceId)
+                    .build();
+            JWSHeader header = new JWSHeader.Builder(ALGORITHM)
+                    .keyID(keySet.activeKeyId())
+                    .build();
+            SignedJWT jwt = new SignedJWT(header, claims);
+            jwt.sign(new MACSigner(keySet.activeSecret()));
+            return new IssuedToken(jwt.serialize(), expiresAt, tokenId);
+        } catch (JOSEException exception) {
             throw new IllegalStateException("Unable to issue authentication token", exception);
         }
     }
 
+    /**
+     * 验证令牌并返回声明。
+     *
+     * 任何失败路径都返回空而不抛异常，且不记录令牌内容——
+     * 区分"签名错误"与"已过期"会给攻击者提供额外信息。
+     */
     public Optional<TokenPayload> verify(String token, String expectedType) {
         if (token == null || token.isBlank()) {
             return Optional.empty();
         }
-        String[] parts = token.split("\\.", -1);
-        if (parts.length != 2) {
-            return Optional.empty();
-        }
         try {
-            byte[] providedSignature = DECODER.decode(parts[1]);
-            byte[] expectedSignature = sign(parts[0]);
-            if (!MessageDigest.isEqual(providedSignature, expectedSignature)) {
+            SignedJWT jwt = SignedJWT.parse(token);
+
+            // 算法必须与签发时一致：不接受令牌自称的任意算法
+            if (!ALGORITHM.equals(jwt.getHeader().getAlgorithm())) {
                 return Optional.empty();
             }
-            TokenPayload payload = objectMapper.readValue(
-                    DECODER.decode(parts[0]),
-                    TokenPayload.class
-            );
-            if (!expectedType.equals(payload.type()) ||
-                    payload.exp() <= Instant.now().getEpochSecond() ||
-                    payload.userId() == null || payload.deviceId() == null) {
+            byte[] secret = keySet.secretForKeyId(jwt.getHeader().getKeyID()).orElse(null);
+            if (secret == null) {
                 return Optional.empty();
             }
-            return Optional.of(payload);
-        } catch (Exception ignored) {
+            JWSVerifier verifier = new MACVerifier(secret);
+            if (!jwt.verify(verifier)) {
+                return Optional.empty();
+            }
+
+            JWTClaimsSet claims = jwt.getJWTClaimsSet();
+            if (!issuer.equals(claims.getIssuer())
+                    || !expectedType.equals(claims.getStringClaim(CLAIM_TOKEN_TYPE))
+                    || claims.getSubject() == null
+                    || claims.getStringClaim(CLAIM_DEVICE_ID) == null) {
+                return Optional.empty();
+            }
+            Date expiration = claims.getExpirationTime();
+            if (expiration == null
+                    || expiration.toInstant().plusSeconds(CLOCK_SKEW_SECONDS).isBefore(Instant.now())) {
+                return Optional.empty();
+            }
+            return Optional.of(new TokenPayload(
+                    claims.getSubject(),
+                    claims.getStringClaim(CLAIM_DEVICE_ID),
+                    expectedType,
+                    expiration.toInstant().getEpochSecond(),
+                    claims.getJWTID()
+            ));
+        } catch (Exception exception) {
+            log.debug("Rejected malformed or unverifiable token");
             return Optional.empty();
         }
-    }
-
-    private byte[] sign(String encodedPayload) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(secret, "HmacSHA256"));
-        return mac.doFinal(encodedPayload.getBytes(StandardCharsets.UTF_8));
     }
 
     public record TokenPayload(
@@ -104,10 +129,10 @@ public class TokenService {
             String deviceId,
             String type,
             long exp,
-            String nonce
+            String tokenId
     ) {
     }
 
-    public record IssuedToken(String token, Instant expiresAt) {
+    public record IssuedToken(String token, Instant expiresAt, String tokenId) {
     }
 }

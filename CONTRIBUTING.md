@@ -150,4 +150,8 @@ fix(realtime): 修正 WebSocket 断连后会话注册表未清理的问题
 - **Outbox 表已就绪但尚未驱动推送**——领域事件请继续写入 `outbox_events`，
   即使当前是进程内直接扇出，将来切换消费端时才不必回头补写。
 
-在这三项解决之前，`deploy/k8s/deployment.yaml` 的 `replicas` 必须保持为 1。
+在这三项解决之前，`deploy/k8s/deployment.yaml` 的 `replicas` 必须保持为 1：
+
+- **WebSocket 连接注册表仍在 JVM 内存**——事件扇出已通过 Redis Pub/Sub 解决，但新连接路由仍需负载均衡层配置粘性路由（sticky session）。新增实时事件时请通过 `RealtimeBroadcastService.broadcastToXxx()` 而不是直接调用 `RealtimeWebSocketHandler`，以确保跨实例投递。
+- **Outbox Worker 只处理消息和红包类事件**——新增领域事件类型时，同步在 `OutboxPublisherWorker.routeEvent()` 中添加路由逻辑，否则 Outbox 的补偿路径不会覆盖该类型。
+- **密钥管理**：JWT 多密钥轮换已支持，但仍来自环境变量，未接入 KMS/Secret Manager。

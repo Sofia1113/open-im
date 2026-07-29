@@ -26,6 +26,17 @@ spring:
     # 演示种子数据只在本地/开发环境加载；prod profile 覆盖为仅 db/migration
     locations: classpath:db/migration,classpath:db/seed
 
+  data:
+    redis:
+      url: ${REDIS_URL:redis://127.0.0.1:6379}
+      # Lettuce 连接池：长连接复用，避免每次 Pub/Sub 发布都新建连接
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 2000ms
+
 management:
   endpoints:
     web:
@@ -34,14 +45,12 @@ management:
   endpoint:
     health:
       probes:
-        # 分离存活与就绪探针：存活失败应重启容器，就绪失败只应摘除流量。
-        # 用同一个端点做两件事会导致数据库短暂不可用时容器被反复重启。
         enabled: true
       show-details: when-authorized
       group:
         readiness:
-          # 数据库不可用时不应继续接收流量
-          include: readinessState,db
+          # Redis 不可用时同样不应接受流量：在线状态和跨实例扇出都依赖它
+          include: readinessState,db,redis
   metrics:
     tags:
       application: ${spring.application.name}
@@ -73,21 +82,27 @@ openim:
       k1: ${TOKEN_SECRET:open-im-local-demo-secret-do-not-use-in-production}
 
   realtime:
-    # 容器文本帧上限；业务层的信令上限（32KB）远小于它，
-    # 使超限由业务层用明确错误码拒绝而不是断连
     max-text-message-size: 65536
-    # 容器空闲超时，作为应用层心跳之外的第二道防线
     idle-timeout-millis: 120000
-    # 发送缓冲：客户端消费不过来时终止连接，而不是无限堆积
     send-buffer-size: 524288
     send-time-limit-millis: 10000
     heartbeat-interval-millis: 30000
     pong-timeout-millis: 90000
+    # presence TTL 应为心跳间隔的 3-4 倍，保证偶发延迟不会误报离线
+    presence-ttl-seconds: 120
+
+  # 每个实例唯一标识，用于 Pub/Sub 跳过自身消息；K8s 部署可注入 Pod 名称
+  instance-id: ${INSTANCE_ID:}
 
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
     max-tracked-keys: 100000
     key-ttl-minutes: 30
+
+  worker:
+    red-packet-expiry-interval: ${WORKER_RED_PACKET_EXPIRY_INTERVAL:30000}
+    call-expiry-interval: ${WORKER_CALL_EXPIRY_INTERVAL:15000}
+    outbox-publish-interval: ${WORKER_OUTBOX_INTERVAL:5000}
 
 logging:
   pattern:

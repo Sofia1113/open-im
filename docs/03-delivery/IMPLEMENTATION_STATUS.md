@@ -27,6 +27,11 @@
 | 领域分层 | `InMemoryStore` 单类 907 行拆为 6 个领域服务 + 6 个 Repository，全局 `synchronized` 单锁移除 |
 | 认证 | 标准 JWT（JWS/HS256）、`kid` 多密钥轮换、刷新令牌轮换与重放检测、设备撤销与远程下线、登录/刷新/撤销审计 |
 | 客户端会话 | 访问令牌临近过期主动刷新、401 被动刷新重试、single-flight 防并发刷新、WebSocket 握手取最新令牌 |
+| Redis 基础设施 | Lettuce 连接池、StringRedisTemplate、RedisMessageListenerContainer（虚拟线程池）、就绪探针含 Redis |
+| 在线状态（Presence） | Redis SETEX + TTL：连接建立/心跳 pong 续期，断开立即删除，实例崩溃自动过期；批量查询用 pipeline |
+| 跨实例事件扇出 | Redis Pub/Sub 频道 openim:events；originInstanceId 跳过自身；USER/DEVICE/CONVERSATION 三类路由 |
+| 分布式限流 | Redis Lua 原子计数器（固定窗口），多实例配额共享；Redis 不可用自动降级为进程内 Bucket4j |
+| Outbox 投递 | OutboxPublisherWorker 轮询未投递事件发布到 Redis；补偿主路径同步推送的遗漏 |
 | 限流 | 登录/刷新/发消息/信令/呼叫/发红包/领红包分策略配额；已认证按 userId、未认证按 IP；WebSocket 命令单独限流 |
 | 安全响应头 | CSP、X-Content-Type-Options、X-Frame-Options、Referrer-Policy、Permissions-Policy、no-store；HSTS 仅生产下发 |
 | 实时连接 | 发送队列背压（替代同步阻塞写）、应用层心跳与半开连接清理、容器帧上限与业务信令上限对齐 |
@@ -54,8 +59,8 @@
 
 | 能力 | 当前状态 | 下一步 |
 | --- | --- | --- |
-| 可靠事件 | `outbox_events` 表与写入路径已就绪，领域变更与事件同事务落库 | 接 Redis Pub/Sub 驱动跨实例推送，取代当前的进程内直接扇出 |
-| 多实例部署 | 数据层已无状态化 | WebSocket 连接注册表仍在 JVM 内存，需迁移到 Redis 并配置粘性路由 |
+| 可靠事件 | Outbox 表与写入路径就绪；OutboxPublisherWorker 轮询未投递事件，发布到 Redis Pub/Sub | Outbox 事件类型覆盖范围可扩展；当前仅处理消息和红包类事件 |
+| 多实例部署 | 事件扇出：Redis Pub/Sub + originInstanceId 去重；在线状态：Redis TTL；限流：Redis 原子计数器 | WebSocket **连接注册表**仍在 JVM 内存，新连接需负载均衡层配置粘性路由 |
 | 断线恢复 | 指数退避重连；按各会话本地最大 `seq` 分页补拉并去重合并 | 同步水位持久化、缺口指标和跨实例恢复测试 |
 | 设备会话 | 刷新令牌轮换 + 宽限期 + 重放检测；`DELETE /api/v1/sessions/current` 与 `/sessions` 支持单设备与全设备下线 | 设备列表接口、管理员强制下线、过期设备记录清理任务 |
 | 密钥管理 | 支持多密钥并存与 `kid` 轮换，配置校验在启动时拒绝弱密钥 | 接入 KMS/Secret Manager，实现自动轮换而非手工切换环境变量 |
@@ -65,8 +70,6 @@
 
 ## 尚未实现（M2/M3）
 
-- Redis、跨实例 WebSocket 广播与 Outbox 消费端。
-- 分布式限流（当前配额按实例独立计算，N 个实例的实际总配额是 N 倍）。
 - 好友申请、群成员完整管理、撤回、置顶、免打扰。
 - 图片/文件对象存储、语音消息、搜索与离线推送。
 - TURN/SFU、屏幕共享、移动端和 Electron 客户端。
@@ -75,7 +78,13 @@
 
 ## 验证记录
 
-本轮（容器化与可观测性）已执行：
+本轮（Redis 改造）已执行：
+
+- `pnpm test`（55 个 Java 测试）/ `pnpm build` / 覆盖率门禁全部通过。
+- `docker compose up -d` 同时启动 PostgreSQL + Redis，服务端就绪探针包含两者。
+- Pub/Sub 路由逻辑通过 `RealtimeEventSubscriberTest` 单元测试覆盖（6 个用例）。
+
+上一轮（容器化与可观测性）验证记录：
 
 - `pnpm typecheck` / `pnpm test`（44 个 Java 测试）/ `pnpm build` 全部通过。
 - `docker compose --profile full up -d --build`：镜像构建成功，就绪探针转为 healthy。

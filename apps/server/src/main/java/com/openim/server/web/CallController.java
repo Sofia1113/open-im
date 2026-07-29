@@ -6,7 +6,7 @@ import com.openim.server.domain.DomainModels.CallRoom;
 import com.openim.server.domain.Requests.CreateCall;
 import com.openim.server.domain.service.CallService;
 import com.openim.server.domain.service.DomainErrors;
-import com.openim.server.realtime.RealtimeWebSocketHandler;
+import com.openim.server.realtime.RealtimeBroadcastService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,17 +21,17 @@ import java.util.Map;
 /**
  * 通话控制器
  * 处理通话的创建、接听、拒绝和离开操作，
- * 通过 WebSocket 实时推送参与者状态变更。
+ * 通过 WebSocket 实时推送参与者状态变更（含跨实例广播）。
  */
 @RestController
 @RequestMapping("/api/v1/calls")
 public class CallController {
     private final CallService callService;
-    private final RealtimeWebSocketHandler realtime;
+    private final RealtimeBroadcastService broadcast;
 
-    public CallController(CallService callService, RealtimeWebSocketHandler realtime) {
+    public CallController(CallService callService, RealtimeBroadcastService broadcast) {
         this.callService = callService;
-        this.realtime = realtime;
+        this.broadcast = broadcast;
     }
 
     @PostMapping
@@ -42,84 +42,53 @@ public class CallController {
         AuthPrincipal auth = AuthPrincipal.from(request);
         CallRoom room = callService.createCall(auth.userUuid(), auth.deviceId(), input);
         room.participants().stream()
-                .filter(participant -> !participant.userId().equals(auth.userId()))
-                .forEach(participant -> realtime.emitToUser(
-                        participant.userId(),
-                        "call:invite",
-                        Map.of("room", room)
-                ));
+                .filter(p -> !p.userId().equals(auth.userId()))
+                .forEach(p -> broadcast.broadcastToUser(p.userId(), "call:invite", Map.of("room", room)));
         return ApiEnvelope.success(room, request);
     }
 
     @GetMapping("/{id}")
-    public ApiEnvelope.Success<CallRoom> get(
-            @PathVariable String id,
-            HttpServletRequest request
-    ) {
+    public ApiEnvelope.Success<CallRoom> get(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
         return ApiEnvelope.success(
-                callService.getCall(DomainErrors.parseId(id, "通话"), auth.userUuid()),
-                request
-        );
+                callService.getCall(DomainErrors.parseId(id, "通话"), auth.userUuid()), request);
     }
 
     @PostMapping("/{id}/accept")
-    public ApiEnvelope.Success<CallRoom> accept(
-            @PathVariable String id,
-            HttpServletRequest request
-    ) {
+    public ApiEnvelope.Success<CallRoom> accept(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
         CallRoom room = callService.acceptCall(
                 DomainErrors.parseId(id, "通话"), auth.userUuid(), auth.deviceId());
-        CallParticipant participant = new CallParticipant(
-                auth.userId(),
-                "joined",
-                auth.deviceId()
-        );
-        emitToParticipants(room, "call:participant:joined", Map.of(
-                "roomId", room.id(),
-                "participant", participant
-        ));
-        realtime.emitToUser(auth.userId(), "call:answered-elsewhere", Map.of(
-                "roomId", room.id(),
-                "acceptedDeviceId", auth.deviceId()
-        ));
+        CallParticipant joined = new CallParticipant(auth.userId(), "joined", auth.deviceId());
+        emitToParticipants(room, "call:participant:joined",
+                Map.of("roomId", room.id(), "participant", joined));
+        broadcast.broadcastToUser(auth.userId(), "call:answered-elsewhere",
+                Map.of("roomId", room.id(), "acceptedDeviceId", auth.deviceId()));
         return ApiEnvelope.success(room, request);
     }
 
     @PostMapping("/{id}/reject")
-    public ApiEnvelope.Success<CallRoom> reject(
-            @PathVariable String id,
-            HttpServletRequest request
-    ) {
+    public ApiEnvelope.Success<CallRoom> reject(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
         CallRoom room = callService.rejectCall(DomainErrors.parseId(id, "通话"), auth.userUuid());
         if ("ended".equals(room.status())) {
             emitToParticipants(room, "call:ended", Map.of(
                     "roomId", room.id(),
-                    "reason", room.endReason() == null ? "rejected" : room.endReason()
-            ));
+                    "reason", room.endReason() == null ? "rejected" : room.endReason()));
         }
         return ApiEnvelope.success(room, request);
     }
 
     @PostMapping("/{id}/leave")
-    public ApiEnvelope.Success<CallRoom> leave(
-            @PathVariable String id,
-            HttpServletRequest request
-    ) {
+    public ApiEnvelope.Success<CallRoom> leave(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
         CallRoom room = callService.leaveCall(DomainErrors.parseId(id, "通话"), auth.userUuid());
-        emitToParticipants(room, "call:participant:left", Map.of(
-                "roomId", room.id(),
-                "userId", auth.userId(),
-                "reason", "left"
-        ));
+        emitToParticipants(room, "call:participant:left",
+                Map.of("roomId", room.id(), "userId", auth.userId(), "reason", "left"));
         if ("ended".equals(room.status())) {
             emitToParticipants(room, "call:ended", Map.of(
                     "roomId", room.id(),
-                    "reason", room.endReason() == null ? "ended" : room.endReason()
-            ));
+                    "reason", room.endReason() == null ? "ended" : room.endReason()));
         }
         return ApiEnvelope.success(room, request);
     }
@@ -128,6 +97,6 @@ public class CallController {
         room.participants().stream()
                 .map(CallParticipant::userId)
                 .distinct()
-                .forEach(userId -> realtime.emitToUser(userId, event, payload));
+                .forEach(uid -> broadcast.broadcastToUser(uid, event, payload));
     }
 }

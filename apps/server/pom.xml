@@ -94,17 +94,27 @@
             <version>${nimbus-jose-jwt.version}</version>
         </dependency>
 
-        <!-- 限流。当前使用进程内令牌桶；多实例部署时换成 bucket4j_jdk17-redis
-             即可切到分布式配额，业务侧的调用方式不变。 -->
+        <!-- 限流。进程内令牌桶（单实例开发用）+ Redis 分布式限流（多实例用）。
+             Bucket4j Redis 后端在中国镜像不可用，因此分布式限流
+             通过 spring-data-redis 自行实现（Lua 脚本原子计数器），
+             调用侧接口不变。 -->
         <dependency>
             <groupId>com.bucket4j</groupId>
             <artifactId>bucket4j_jdk17-core</artifactId>
             <version>${bucket4j.version}</version>
         </dependency>
-        <!-- 令牌桶按 key 缓存并自动淘汰，避免长期累积不再活跃的限流键 -->
+        <!-- 令牌桶按 key 缓存并自动淘汰，进程内限流降级时使用 -->
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
+        </dependency>
+
+        <!-- Redis：在线状态、Pub/Sub 跨实例扇出、分布式限流。
+             选择 Lettuce（Spring Boot 默认）而非 Jedis：Lettuce 是非阻塞的，
+             在 WebSocket 广播这种高并发写入场景下不会因连接池耗尽而串行化。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
         <dependency>
@@ -123,6 +133,9 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Redis 集成测试直接使用 GenericContainer + redis:7-alpine 镜像，
+             不依赖 testcontainers:redis 模块（它只是对 GenericContainer 的封装），
+             避免引入 Spring Boot BOM 之外的非托管版本。 -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>

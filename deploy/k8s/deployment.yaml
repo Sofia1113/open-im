@@ -67,6 +67,16 @@ spec:
                   key: token-secret
             - name: CLIENT_ORIGIN
               value: https://im.example.com
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: openim-secrets
+                  key: redis-url
+            # 注入 Pod 名称作为实例 ID，便于 Pub/Sub 消息追踪与日志关联
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
 
           # 存活探针只反映进程是否卡死。它不包含数据库检查——
           # 否则数据库短暂抖动会引发容器被反复重启，把一次可恢复的故障放大成雪崩。

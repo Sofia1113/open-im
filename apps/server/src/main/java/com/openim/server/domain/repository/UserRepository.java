@@ -69,32 +69,19 @@ public class UserRepository {
     }
 
     /**
-     * 更新实时在线状态
+     * 更新下线时间戳。
      *
-     * 单实例部署下由 WebSocket 连接注册表驱动。迁移到多实例后，presence 应改由
-     * Redis 维护并以此表作为兜底快照，避免实例崩溃后状态永久停留在 online。
+     * presence（在线/离线状态）已迁移到 Redis，由 PresenceService 维护；
+     * 数据库只保留 last_seen_at 作为历史记录，不再存储实时状态。
      */
-    public void updatePresence(UUID id, boolean online) {
+    public void updateLastSeenAt(UUID id, java.time.Instant lastSeenAt) {
         jdbcClient.sql("""
                         UPDATE users
-                        SET presence = :presence,
-                            last_seen_at = CASE WHEN :online THEN NULL ELSE now() END,
-                            updated_at = now()
+                        SET last_seen_at = :lastSeenAt, updated_at = now()
                         WHERE id = :id
                         """)
-                .param("presence", online ? "online" : "offline")
-                .param("online", online)
+                .param("lastSeenAt", java.sql.Timestamp.from(lastSeenAt))
                 .param("id", id)
-                .update();
-    }
-
-    /** 进程启动时把残留的 online 状态清零，防止上次非正常退出留下的脏状态 */
-    public int resetAllPresence() {
-        return jdbcClient.sql("""
-                        UPDATE users
-                        SET presence = 'offline', last_seen_at = now(), updated_at = now()
-                        WHERE presence = 'online'
-                        """)
                 .update();
     }
 

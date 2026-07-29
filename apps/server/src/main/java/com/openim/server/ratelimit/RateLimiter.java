@@ -6,57 +6,79 @@ import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.ConsumptionProbe;
 import io.github.bucket4j.Refill;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
 /**
- * 令牌桶限流器
+ * 限流门面
  *
- * 当前实现是进程内的：配额按实例独立计算，N 个实例的实际总配额是 N 倍。
- * 多实例部署时应换成 bucket4j 的 Redis 后端，届时只需替换 {@link #bucketFor} 的实现，
- * 调用方无需改动。
+ * 优先使用 Redis 分布式限流（{@link RedisRateLimiter}），多实例下配额共享。
+ * Redis 不可用时自动降级为进程内令牌桶（Bucket4j + Caffeine），保证业务不中断。
  *
- * 桶按 key 缓存并在空闲后淘汰，避免为每个出现过的 IP 或用户永久保留一个桶。
+ * <pre>
+ * Redis 可用时：rate:{policy}:{identifier}:{windowIndex}  ← 跨实例共享
+ * Redis 不可用：进程内 Caffeine 缓存的 Bucket4j 令牌桶   ← 每实例独立
+ * </pre>
  */
 @Component
 public class RateLimiter {
-    private final LoadingCache<BucketKey, Bucket> buckets;
+    private static final Logger log = LoggerFactory.getLogger(RateLimiter.class);
+
     private final boolean enabled;
+    private final LoadingCache<BucketKey, Bucket> localBuckets;
+
+    @Nullable
+    private final RedisRateLimiter redisRateLimiter;
 
     public RateLimiter(
             @Value("${openim.rate-limit.enabled:true}") boolean enabled,
             @Value("${openim.rate-limit.max-tracked-keys:100000}") long maxTrackedKeys,
-            @Value("${openim.rate-limit.key-ttl-minutes:30}") long keyTtlMinutes
+            @Value("${openim.rate-limit.key-ttl-minutes:30}") long keyTtlMinutes,
+            @Autowired(required = false) @Nullable RedisRateLimiter redisRateLimiter
     ) {
         this.enabled = enabled;
-        this.buckets = Caffeine.newBuilder()
+        this.redisRateLimiter = redisRateLimiter;
+        this.localBuckets = Caffeine.newBuilder()
                 .maximumSize(maxTrackedKeys)
                 .expireAfterAccess(Duration.ofMinutes(keyTtlMinutes))
-                .build(this::createBucket);
+                .build(this::createLocalBucket);
     }
 
     /**
      * 尝试消费一个令牌。
      *
      * @param policy     该动作的配额
-     * @param identifier 限流主体：已认证请求用 userId，未认证请求用客户端 IP
-     * @return 是否放行，以及被拒绝时建议的重试等待时长
+     * @param identifier 限流主体：已认证请求用 "user:{id}"，未认证用 "ip:{addr}"
      */
     public Decision tryConsume(RateLimitPolicy policy, String identifier) {
         if (!enabled) {
             return Decision.allow();
         }
-        Bucket bucket = buckets.get(new BucketKey(policy, identifier));
-        ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
-        if (probe.isConsumed()) {
-            return Decision.allow();
+        // Redis 优先：多实例下共享配额，防止单用户通过多实例绕过限制
+        if (redisRateLimiter != null) {
+            Decision decision = redisRateLimiter.tryConsume(policy, identifier);
+            // RedisRateLimiter 内部已处理 Redis 故障并降级放行；
+            // 若它明确拒绝则直接返回，无需再查本地桶
+            if (!decision.allowed()) {
+                return decision;
+            }
+            return decision;
         }
-        return Decision.reject(Duration.ofNanos(probe.getNanosToWaitForRefill()));
+        // 降级：进程内令牌桶
+        Bucket bucket = localBuckets.get(new BucketKey(policy, identifier));
+        ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
+        return probe.isConsumed()
+                ? Decision.allow()
+                : Decision.reject(Duration.ofNanos(probe.getNanosToWaitForRefill()));
     }
 
-    private Bucket createBucket(BucketKey key) {
+    private Bucket createLocalBucket(BucketKey key) {
         RateLimitPolicy policy = key.policy();
         Bandwidth bandwidth = Bandwidth.classic(
                 policy.capacity(),
@@ -65,28 +87,17 @@ public class RateLimiter {
         return Bucket.builder().addLimit(bandwidth).build();
     }
 
-    /** 限流键：策略与主体的组合，使同一用户在不同动作上互不影响 */
-    private record BucketKey(RateLimitPolicy policy, String identifier) {
-    }
+    private record BucketKey(RateLimitPolicy policy, String identifier) {}
 
-    /**
-     * 限流决策。
-     *
-     * @param allowed      是否放行
-     * @param retryAfter   建议重试等待时长，放行时为零
-     */
     public record Decision(boolean allowed, Duration retryAfter) {
         private static final Decision ALLOWED = new Decision(true, Duration.ZERO);
 
-        static Decision allow() {
-            return ALLOWED;
-        }
+        static Decision allow() { return ALLOWED; }
 
         static Decision reject(Duration retryAfter) {
             return new Decision(false, retryAfter);
         }
 
-        /** 向客户端返回的 Retry-After 秒数，至少为 1 */
         public long retryAfterSeconds() {
             return Math.max(1, retryAfter.toSeconds());
         }

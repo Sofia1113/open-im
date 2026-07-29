@@ -144,10 +144,10 @@ pnpm --filter @open-im/web preview
 
 ## 当前边界
 
-数据已持久化到 PostgreSQL，账务使用复式记账。剩余距离生产的差距：
+数据已持久化到 PostgreSQL，账务使用复式记账，Redis 已接入用于在线状态、分布式限流和跨实例事件扇出。剩余距离生产的差距：
 
-- **多实例**：WebSocket 连接注册表仍在 JVM 内存中，起第二个实例会丢消息，需要 Redis Pub/Sub 或 MQ 扇出。Outbox 表已就绪但尚未驱动推送。
-- **限流**：已按动作分策略限流，但配额是进程内的——多实例部署时实际总配额会翻倍，需换成 Redis 后端。
+- **多实例**：事件扇出已通过 Redis Pub/Sub 解决。WebSocket **连接注册表**仍在 JVM 内存——新连接需要负载均衡层配置粘性路由，否则 Redis subscriber 无法找到目标用户的本地会话。
+- **限流**：已切换为 Redis 分布式原子计数器，多实例下配额共享。
 - **密钥管理**：JWT 支持多密钥轮换，但密钥仍来自环境变量，未接入 KMS/Secret Manager。
 - **链路导出**：已生成 traceId/spanId 并注入日志，但未配置 OTLP collector，span 不对外导出。
 - **音视频**：WebRTC 使用 Mesh 和公共 STUN，未部署 TURN/SFU。

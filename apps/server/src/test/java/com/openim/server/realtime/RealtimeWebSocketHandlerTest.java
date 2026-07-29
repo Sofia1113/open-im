@@ -1,10 +1,10 @@
 package com.openim.server.realtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openim.server.domain.repository.OutboxRepository;
 import com.openim.server.domain.service.CallService;
 import com.openim.server.domain.service.ConversationService;
 import com.openim.server.domain.service.MessageService;
-import com.openim.server.domain.repository.OutboxRepository;
 import com.openim.server.domain.service.UserService;
 import com.openim.server.observability.DomainMetrics;
 import com.openim.server.ratelimit.RateLimiter;
@@ -33,6 +33,8 @@ class RealtimeWebSocketHandlerTest {
     void isolatesTheSameDeviceIdAcrossDifferentUsers() throws Exception {
         ConversationService conversationService = mock(ConversationService.class);
         when(conversationService.listConversations(any())).thenReturn(List.of());
+        PresenceService presenceService = mock(PresenceService.class);
+
         RealtimeWebSocketHandler handler = new RealtimeWebSocketHandler(
                 new ObjectMapper(),
                 mock(Validator.class),
@@ -40,7 +42,8 @@ class RealtimeWebSocketHandlerTest {
                 mock(MessageService.class),
                 mock(CallService.class),
                 mock(UserService.class),
-                new RateLimiter(true, 1_000, 30),
+                presenceService,
+                new RateLimiter(true, 1_000, 30, null),
                 new DomainMetrics(registry, mock(OutboxRepository.class)),
                 registry,
                 512 * 1024,

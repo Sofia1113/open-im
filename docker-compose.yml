@@ -1,10 +1,12 @@
 # 本地开发与整体验证
 #
-#   docker compose up -d postgres      仅启动数据库（配合 pnpm dev 在宿主机跑服务端）
-#   docker compose --profile full up -d --build   连同服务端一起以容器方式运行
-#   docker compose down -v             停止并清空数据
+#   docker compose up -d                             仅启动 postgres + redis
+#   docker compose --profile full up -d --build      连同服务端一起以容器方式运行
+#   docker compose down -v                           停止并清空所有数据
 #
-# 宿主机直接运行服务端时连接 jdbc:postgresql://127.0.0.1:5432/openim（见 application.yml）。
+# 宿主机直接运行服务端时：
+#   PostgreSQL：jdbc:postgresql://127.0.0.1:5432/openim
+#   Redis：redis://127.0.0.1:6379
 
 services:
   postgres:
@@ -14,7 +16,6 @@ services:
       POSTGRES_DB: openim
       POSTGRES_USER: openim
       POSTGRES_PASSWORD: openim
-      # 使用 UTC，与应用层 timestamptz 语义一致
       TZ: UTC
       PGTZ: UTC
     ports:
@@ -29,8 +30,28 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: openim-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
   server:
-    # 仅在显式指定 profile 时启动，避免干扰"数据库用容器、服务端用 pnpm dev"的日常开发方式
     profiles: ["full"]
     build:
       context: ./apps/server
@@ -39,12 +60,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       HOST: 0.0.0.0
       PORT: 3001
       DATABASE_URL: jdbc:postgresql://postgres:5432/openim
       DATABASE_USER: openim
       DATABASE_PASSWORD: openim
+      REDIS_URL: redis://redis:6379
       CLIENT_ORIGIN: http://localhost:5173
       # 本地编排使用的占位密钥；生产必须由密钥管理系统注入
       TOKEN_SECRET: local-compose-secret-with-more-than-32-characters
@@ -61,3 +85,4 @@ services:
 
 volumes:
   postgres-data:
+  redis-data:

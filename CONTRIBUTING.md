@@ -26,12 +26,26 @@ pnpm dev:web
 ## 提交前必须通过
 
 ```bash
+docker compose up -d   # 集成测试需要 PostgreSQL
+pnpm lint
 pnpm typecheck
-pnpm test
+pnpm test              # 含 JaCoCo 覆盖率门禁
 pnpm build
 ```
 
 CI 会执行同样的命令，本地不通过不要提 PR。
+
+CI 另有三条独立流水线：安全扫描（gitleaks 密钥扫描、依赖审计、SBOM）、
+CodeQL 静态分析、镜像构建与 Trivy 扫描。
+
+### 压测
+
+```bash
+docker compose --profile full up -d --build
+k6 run load-test/red-packet.js
+```
+
+压测不在 CI 中运行——它需要独立且可复现的环境，放进每次 PR 只会带来不稳定的失败。
 
 ## 工程结构
 
@@ -86,7 +100,7 @@ fix(realtime): 修正 WebSocket 断连后会话注册表未清理的问题
 ## 代码风格
 
 - **Java**：4 空格缩进，行宽 120。公开类和非平凡方法写 Javadoc，说明"为什么"而不是复述代码。
-- **TypeScript**：2 空格缩进。`tsconfig.base.json` 已开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`，不要用 `any` 或 `@ts-ignore` 绕过。
+- **TypeScript**：2 空格缩进。`tsconfig.base.json` 已开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`，不要用 `any` 或 `@ts-ignore` 绕过（ESLint 会拒绝）。
 - **注释与文档统一使用中文**，与现有代码保持一致。
 - 缩进与换行由 `.editorconfig` 约束，请确保编辑器已启用。
 
@@ -102,6 +116,8 @@ fix(realtime): 修正 WebSocket 断连后会话注册表未清理的问题
 - README/运维说明足够让另一位开发者复现
 
 **涉及账务（钱包、红包）和鉴权的改动必须附带并发测试或权限边界测试**，这是项目风险最高的两条链路。
+参考 `RedPacketConcurrencyTest`：用真实线程池并发提交，并在结束后断言资金守恒与借贷平衡。
+单线程测试覆盖不到"两个事务同时读到相同状态"的窗口，而缺陷恰恰出在那里。
 
 ## 安全要求
 

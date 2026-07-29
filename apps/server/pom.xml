@@ -22,6 +22,15 @@
         <!-- Spring Boot BOM 不管理该依赖（它由 Spring Security BOM 提供），需显式声明版本 -->
         <nimbus-jose-jwt.version>10.3</nimbus-jose-jwt.version>
         <bucket4j.version>8.14.0</bucket4j.version>
+        <jacoco.version>0.8.13</jacoco.version>
+        <cyclonedx.version>2.9.1</cyclonedx.version>
+        <!--
+            覆盖率下限。设为当前实际水平略低一点，用于防止回退而不是追求数字：
+            阈值定得过高会诱导为覆盖率而写无断言的测试。
+            补充测试后应同步上调。
+        -->
+        <jacoco.line.coverage>0.55</jacoco.line.coverage>
+        <jacoco.branch.coverage>0.40</jacoco.branch.coverage>
     </properties>
 
     <dependencies>
@@ -126,6 +135,71 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- SBOM：供应链审计与漏洞比对的基础，版本固定以保证产物可复现 -->
+            <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
+                <version>${cyclonedx.version}</version>
+                <configuration>
+                    <outputFormat>json</outputFormat>
+                    <!-- 只记录实际打进制品的依赖，test 作用域不属于交付物 -->
+                    <includeTestScope>false</includeTestScope>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>check-coverage</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.line.coverage}</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.branch.coverage}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                            <excludes>
+                                <!-- 纯数据载体与入口类没有可测的分支逻辑，
+                                     计入分母只会稀释真实的覆盖情况 -->
+                                <exclude>com/openim/server/OpenImApplication.class</exclude>
+                                <exclude>com/openim/server/domain/DomainModels*</exclude>
+                                <exclude>com/openim/server/domain/DomainResults*</exclude>
+                                <exclude>com/openim/server/domain/Requests*</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

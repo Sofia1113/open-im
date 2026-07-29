@@ -10,9 +10,16 @@
     "dev:web": "pnpm --filter @open-im/web dev",
     "build": "pnpm --filter @open-im/contracts build && mvn -f apps/server/pom.xml package && pnpm --filter @open-im/web build",
     "typecheck": "pnpm --filter @open-im/contracts build && mvn -q -f apps/server/pom.xml -DskipTests compile && pnpm --filter @open-im/web typecheck",
-    "test": "mvn -q -f apps/server/pom.xml test && pnpm --filter @open-im/contracts test && pnpm --filter @open-im/web test"
+    "test": "mvn -q -f apps/server/pom.xml verify && pnpm --filter @open-im/contracts test && pnpm --filter @open-im/web test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "devDependencies": {
-    "concurrently": "^9.2.0"
+    "@eslint/js": "^10.0.1",
+    "concurrently": "^9.2.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
+    "typescript-eslint": "^8.65.0"
   }
 }

@@ -8,10 +8,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # 同一分支的新推送取消尚在排队的旧任务，避免堆积
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
+    name: 构建与测试
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -33,14 +39,157 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint
+        run: pnpm lint
+
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
+      # 集成测试通过 Testcontainers 启动真实 PostgreSQL，
+      # 依赖 runner 自带的 Docker daemon；同时执行 JaCoCo 覆盖率门禁
+      - name: Test（含覆盖率门禁）
         run: pnpm test
 
       - name: Build
         run: pnpm build
 
-      - name: Audit production JavaScript dependencies
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: apps/server/target/site/jacoco/
+          retention-days: 7
+
+  security:
+    name: 安全扫描
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      # 通过 env 中转：secrets 上下文在 step 的 if 表达式中不可直接引用
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks 需要完整历史：密钥一旦进入过某次提交，即使后续删除也已经泄漏
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 密钥扫描（gitleaks）
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: JavaScript 依赖漏洞审计
         run: pnpm --registry=https://registry.npmjs.org audit --prod
+
+      # OWASP dependency-check 没有 NVD API key 时下载漏洞库会极慢，
+      # 未配置密钥则跳过，而不是让流水线长时间卡住
+      - name: Java 依赖漏洞扫描（OWASP）
+        if: env.NVD_API_KEY != ''
+        run: |
+          mvn -B -f apps/server/pom.xml org.owasp:dependency-check-maven:check \
+            -DnvdApiKey="$NVD_API_KEY" \
+            -DfailBuildOnCVSS=7 \
+            -DassemblyAnalyzerEnabled=false
+
+      - name: 生成 SBOM
+        run: mvn -B -f apps/server/pom.xml org.cyclonedx:cyclonedx-maven-plugin:makeBom
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: apps/server/target/*bom*.json
+          retention-days: 30
+
+  codeql:
+    name: CodeQL 静态分析
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [java-kotlin, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Build Java
+        if: matrix.language == 'java-kotlin'
+        run: mvn -B -f apps/server/pom.xml -DskipTests package
+
+      - name: Autobuild
+        if: matrix.language != 'java-kotlin'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
+
+  image:
+    name: 镜像构建与扫描
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f apps/server/Dockerfile -t openim-server:ci apps/server
+
+      - name: 镜像漏洞扫描（Trivy）
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: openim-server:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          # 结果上传到 Security 面板，不直接阻断：
+          # 基础镜像的高危 CVE 常需等待上游发版，阻断会让所有 PR 一起卡死
+          exit-code: "0"
+
+      - name: Upload Trivy results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif

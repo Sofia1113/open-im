@@ -9,12 +9,17 @@
 | Node.js | 22+ | Web 客户端与契约包 |
 | pnpm | 10.12.4 | 由 `packageManager` 字段锁定，请勿混用 npm/yarn |
 
+另需 **Docker**：本地 PostgreSQL 与集成测试的 Testcontainers 都依赖它。
+
 ## 本地启动
 
 ```bash
+docker compose up -d   # PostgreSQL
 pnpm install
-pnpm dev          # 同时启动 Spring Boot (:3001) 与 Vite (:5173)
+pnpm dev               # 同时启动 Spring Boot (:3001) 与 Vite (:5173)
 ```
+
+服务端启动时由 Flyway 自动建表并写入演示数据。
 
 也可以分别启动：
 
@@ -132,11 +137,17 @@ fix(realtime): 修正 WebSocket 断连后会话注册表未清理的问题
 
 ## 当前阶段说明
 
-本仓库目前处于 **M1 演示 MVP** 阶段，使用内存仓储，禁止用于生产。
-正在推进的生产化改造顺序见 [ROADMAP.md](./docs/00-product/ROADMAP.md) 与 [IMPLEMENTATION_STATUS.md](./docs/03-delivery/IMPLEMENTATION_STATUS.md)。
+数据已持久化到 PostgreSQL，认证、限流、可观测性和容器化均已落地，
+详细进度见 [IMPLEMENTATION_STATUS.md](./docs/03-delivery/IMPLEMENTATION_STATUS.md)。
 
-在演示架构上继续叠加功能之前，请先确认改动不会加深下列已知技术债：
+新增功能前请先确认改动不会加深下列**尚未解决**的技术债：
 
-- `InMemoryStore` 的全局 `synchronized` 单锁
-- WebSocket 连接注册表位于 JVM 内存，阻塞多实例部署
-- 缺少限流、令牌撤销与可观测性
+- **WebSocket 连接注册表位于 JVM 内存**——这是当前阻塞多实例部署的头号问题。
+  新增实时事件时请通过既有的 `emitToUser` / `emitToConversation` 扇出，
+  不要另建进程内状态，否则迁移到 Redis Pub/Sub 时需要改的地方会更多。
+- **限流配额是进程内的**——多实例下实际总配额会翻倍。新增限流策略时
+  统一走 `RateLimiter`，切换到 Redis 后端时调用方无需改动。
+- **Outbox 表已就绪但尚未驱动推送**——领域事件请继续写入 `outbox_events`，
+  即使当前是进程内直接扇出，将来切换消费端时才不必回头补写。
+
+在这三项解决之前，`deploy/k8s/deployment.yaml` 的 `replicas` 必须保持为 1。

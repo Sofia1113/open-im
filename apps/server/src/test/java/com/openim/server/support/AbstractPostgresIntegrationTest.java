@@ -31,5 +31,8 @@ public abstract class AbstractPostgresIntegrationTest {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        // MockMvc 环境没有真实 Servlet 容器，容器级 WebSocket 配置无法初始化。
+        // 这项配置本身也不是 MockMvc 能验证的（它约束的是 WebSocket 帧大小与空闲超时）。
+        registry.add("openim.realtime.container-config-enabled", () -> "false");
     }
 }

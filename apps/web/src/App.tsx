@@ -318,7 +318,9 @@ function Workspace({
       showToast("通话已结束");
     });
     realtime.on("connect_error", (error) => {
-      if (error.message === "AUTH_REQUIRED") showToast("登录已失效，请重新登录");
+      // 只对终止性错误弹提示：普通连接失败会自动重连，由连接状态指示器体现即可，
+      // 每次重试都弹一次会在弱网下刷屏
+      if (error.code === "AUTH_REQUIRED") showToast(error.message);
     });
     realtime.connect();
 

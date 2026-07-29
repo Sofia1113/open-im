@@ -9,11 +9,27 @@ import type {
 // 基于原生 WebSocket 实现，支持事件监听、命令发送和自动重连。
 // ============================================================
 
+/**
+ * 实时连接错误
+ *
+ * 带错误码而不是只有文案：调用方需要区分"会话失效"（终止性，必须引导重新登录）
+ * 与"网络抖动"（会自动重连，不必打扰用户）。
+ */
+export class RealtimeError extends Error {
+  constructor(
+    public readonly code: "AUTH_REQUIRED" | "CONNECT_FAILED",
+    message: string,
+  ) {
+    super(message);
+    this.name = "RealtimeError";
+  }
+}
+
 /** WebSocket 生命周期事件 */
 interface LifecycleEvents {
   connect: () => void;
   disconnect: () => void;
-  connect_error: (error: Error) => void;
+  connect_error: (error: RealtimeError) => void;
 }
 
 /** 实时事件类型：服务端推送事件和生命周期事件的联合 */
@@ -161,14 +177,14 @@ export class RealtimeClient {
     try {
       token = await this.tokenProvider();
     } catch {
-      this.dispatch("connect_error", new Error("实时连接失败"));
+      this.dispatch("connect_error", new RealtimeError("CONNECT_FAILED", "实时连接失败"));
       if (!this.manuallyClosed) this.scheduleReconnect();
       return;
     }
 
     if (token === null) {
       // 会话已失效：继续重连只会不断收到 401，交由上层引导重新登录
-      this.dispatch("connect_error", new Error("登录已失效，请重新登录"));
+      this.dispatch("connect_error", new RealtimeError("AUTH_REQUIRED", "登录已失效，请重新登录"));
       return;
     }
     // 取令牌是异步的，期间可能已被 disconnect() 取消
@@ -190,7 +206,7 @@ export class RealtimeClient {
     };
     socket.onmessage = (message) => this.handleMessage(message.data);
     socket.onerror = () => {
-      this.dispatch("connect_error", new Error("实时连接失败"));
+      this.dispatch("connect_error", new RealtimeError("CONNECT_FAILED", "实时连接失败"));
     };
     socket.onclose = () => {
       if (this.socket === socket) this.socket = null;
@@ -227,7 +243,10 @@ export class RealtimeClient {
         );
       }
     } catch {
-      this.dispatch("connect_error", new Error("收到无法解析的实时事件"));
+      this.dispatch(
+        "connect_error",
+        new RealtimeError("CONNECT_FAILED", "收到无法解析的实时事件"),
+      );
     }
   }
 

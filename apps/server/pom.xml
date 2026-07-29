@@ -21,6 +21,7 @@
         <java.version>21</java.version>
         <!-- Spring Boot BOM 不管理该依赖（它由 Spring Security BOM 提供），需显式声明版本 -->
         <nimbus-jose-jwt.version>10.3</nimbus-jose-jwt.version>
+        <bucket4j.version>8.14.0</bucket4j.version>
     </properties>
 
     <dependencies>
@@ -69,6 +70,19 @@
             <groupId>com.nimbusds</groupId>
             <artifactId>nimbus-jose-jwt</artifactId>
             <version>${nimbus-jose-jwt.version}</version>
+        </dependency>
+
+        <!-- 限流。当前使用进程内令牌桶；多实例部署时换成 bucket4j_jdk17-redis
+             即可切到分布式配额，业务侧的调用方式不变。 -->
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j_jdk17-core</artifactId>
+            <version>${bucket4j.version}</version>
+        </dependency>
+        <!-- 令牌桶按 key 缓存并自动淘汰，避免长期累积不再活跃的限流键 -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
 
         <dependency>

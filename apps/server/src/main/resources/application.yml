@@ -54,3 +54,20 @@ openim:
     active-key-id: ${JWT_ACTIVE_KEY_ID:k1}
     keys:
       k1: ${TOKEN_SECRET:open-im-local-demo-secret-do-not-use-in-production}
+
+  realtime:
+    # 容器文本帧上限；业务层的信令上限（32KB）远小于它，
+    # 使超限由业务层用明确错误码拒绝而不是断连
+    max-text-message-size: 65536
+    # 容器空闲超时，作为应用层心跳之外的第二道防线
+    idle-timeout-millis: 120000
+    # 发送缓冲：客户端消费不过来时终止连接，而不是无限堆积
+    send-buffer-size: 524288
+    send-time-limit-millis: 10000
+    heartbeat-interval-millis: 30000
+    pong-timeout-millis: 90000
+
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    max-tracked-keys: 100000
+    key-ttl-minutes: 30

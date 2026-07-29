@@ -11,19 +11,26 @@ import com.openim.server.domain.service.CallService;
 import com.openim.server.domain.service.ConversationService;
 import com.openim.server.domain.service.MessageService;
 import com.openim.server.domain.service.UserService;
+import com.openim.server.ratelimit.RateLimitPolicy;
+import com.openim.server.ratelimit.RateLimiter;
 import com.openim.server.web.ApiException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.PongMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -33,11 +40,29 @@ import java.util.concurrent.ConcurrentHashMap;
  * WebSocket 实时消息处理器
  *
  * 管理用户/设备/会话级别的连接注册，处理消息发送和 WebRTC 信令的转发。
+ *
+ * 三点与可靠性直接相关的设计：
+ * <ul>
+ *   <li>每条连接用 {@link ConcurrentWebSocketSessionDecorator} 包装，写入变为带缓冲的非阻塞操作。
+ *       此前直接在 {@code synchronized(session)} 里同步 {@code sendMessage}，
+ *       一个慢客户端就能占住 Tomcat 工作线程，群发场景下会级联拖垮整个线程池。</li>
+ *   <li>注册表按 sessionId 索引而非持有 session 对象，因为装饰器与原始 session 不相等，
+ *       连接关闭回调拿到的是后者。</li>
+ *   <li>应用层心跳先于 TCP 发现半开连接：对端断电或网络中断时 FIN 可能永远不到，
+ *       仅靠容器空闲超时会让连接和其占用的注册表项长期滞留。</li>
+ * </ul>
  */
 @Component
 public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(RealtimeWebSocketHandler.class);
-    private static final int MAX_SIGNAL_SIZE = 1_000_000;
+
+    /**
+     * 单条信令载荷上限。
+     *
+     * 远小于容器的文本帧上限（64KB），使超限由业务层用明确错误码拒绝，
+     * 而不是让容器直接断连。典型 SDP 为数 KB，32KB 已有充足余量。
+     */
+    private static final int MAX_SIGNAL_SIZE = 32 * 1024;
 
     private final ObjectMapper objectMapper;
     private final Validator validator;
@@ -45,12 +70,23 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private final MessageService messageService;
     private final CallService callService;
     private final UserService userService;
-    /** 用户 ID ↔ 会话集合映射 */
-    private final Map<String, Set<WebSocketSession>> userSessions = new ConcurrentHashMap<>();
-    /** 用户 + 设备 ID ↔ 会话集合映射，避免不同账号复用 deviceId 时串流 */
-    private final Map<DeviceSessionKey, Set<WebSocketSession>> deviceSessions = new ConcurrentHashMap<>();
-    /** 会话 ID ↔ 会话集合映射 */
-    private final Map<String, Set<WebSocketSession>> conversationSessions = new ConcurrentHashMap<>();
+    private final RateLimiter rateLimiter;
+
+    /** 发送缓冲上限：超过说明客户端消费不过来，终止连接而不是继续堆积 */
+    private final int sendBufferSizeLimit;
+    /** 单次发送的时间上限 */
+    private final int sendTimeLimitMillis;
+    /** 超过该时长没有收到 pong 即判定连接已死 */
+    private final long pongTimeoutMillis;
+
+    /** sessionId ↔ 连接状态 */
+    private final Map<String, SessionEntry> sessions = new ConcurrentHashMap<>();
+    /** 用户 ID ↔ sessionId 集合 */
+    private final Map<String, Set<String>> userSessions = new ConcurrentHashMap<>();
+    /** 用户 + 设备 ID ↔ sessionId 集合，避免不同账号复用 deviceId 时串流 */
+    private final Map<DeviceSessionKey, Set<String>> deviceSessions = new ConcurrentHashMap<>();
+    /** 会话 ID ↔ sessionId 集合 */
+    private final Map<String, Set<String>> conversationSessions = new ConcurrentHashMap<>();
 
     public RealtimeWebSocketHandler(
             ObjectMapper objectMapper,
@@ -58,7 +94,11 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             ConversationService conversationService,
             MessageService messageService,
             CallService callService,
-            UserService userService
+            UserService userService,
+            RateLimiter rateLimiter,
+            @Value("${openim.realtime.send-buffer-size:524288}") int sendBufferSizeLimit,
+            @Value("${openim.realtime.send-time-limit-millis:10000}") int sendTimeLimitMillis,
+            @Value("${openim.realtime.pong-timeout-millis:90000}") long pongTimeoutMillis
     ) {
         this.objectMapper = objectMapper;
         this.validator = validator;
@@ -66,6 +106,10 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         this.messageService = messageService;
         this.callService = callService;
         this.userService = userService;
+        this.rateLimiter = rateLimiter;
+        this.sendBufferSizeLimit = sendBufferSizeLimit;
+        this.sendTimeLimitMillis = sendTimeLimitMillis;
+        this.pongTimeoutMillis = pongTimeoutMillis;
     }
 
     /** 连接建立时：注册到用户/设备/会话三级映射，标记用户在线 */
@@ -73,10 +117,16 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) {
         String userId = userId(session);
         String deviceId = deviceId(session);
-        add(userSessions, userId, session);
-        add(deviceSessions, new DeviceSessionKey(userId, deviceId), session);
+        // 包装后写入走缓冲队列；超出缓冲或超时由装饰器终止连接
+        WebSocketSession concurrent = new ConcurrentWebSocketSessionDecorator(
+                session, sendTimeLimitMillis, sendBufferSizeLimit);
+
+        String sessionId = session.getId();
+        sessions.put(sessionId, new SessionEntry(concurrent, userId, deviceId));
+        add(userSessions, userId, sessionId);
+        add(deviceSessions, new DeviceSessionKey(userId, deviceId), sessionId);
         for (Conversation conversation : conversationService.listConversations(userUuid(session))) {
-            add(conversationSessions, conversation.id(), session);
+            add(conversationSessions, conversation.id(), sessionId);
         }
         userService.setUserOnline(userUuid(session), true);
     }
@@ -84,6 +134,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     /** 处理收到的文本消息：解析命令信封并分发到对应处理器 */
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        touch(session.getId());
         String commandId = null;
         try {
             JsonNode root = objectMapper.readTree(message.getPayload());
@@ -98,9 +149,14 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             String event = requiredText(root, "event");
             JsonNode payload = root.path("payload");
             switch (event) {
-                case "message:send" -> handleSendMessage(session, commandId, payload);
-                case "rtc:offer", "rtc:answer", "rtc:ice-candidate" ->
-                        handleRtcSignal(session, commandId, event, payload);
+                case "message:send" -> {
+                    requireQuota(session, RateLimitPolicy.SEND_MESSAGE);
+                    handleSendMessage(session, commandId, payload);
+                }
+                case "rtc:offer", "rtc:answer", "rtc:ice-candidate" -> {
+                    requireQuota(session, RateLimitPolicy.RTC_SIGNAL);
+                    handleRtcSignal(session, commandId, event, payload);
+                }
                 default -> throw new ApiException(
                         HttpStatus.BAD_REQUEST,
                         "UNKNOWN_EVENT",
@@ -113,6 +169,29 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             log.error("Realtime command failed userId={} commandId={}",
                     userId(session), commandId, exception);
             sendErrorAck(session, commandId, "INTERNAL_ERROR", "服务暂时不可用");
+        }
+    }
+
+    /** 客户端回应心跳：刷新存活时间 */
+    @Override
+    protected void handlePongMessage(WebSocketSession session, PongMessage message) {
+        touch(session.getId());
+    }
+
+    /**
+     * 校验实时命令配额。
+     *
+     * WebSocket 命令不经过 HTTP 拦截器，必须在这里单独限流——
+     * 否则一条已建立的连接就能绕过全部 HTTP 侧的速率约束。
+     */
+    private void requireQuota(WebSocketSession session, RateLimitPolicy policy) {
+        RateLimiter.Decision decision = rateLimiter.tryConsume(policy, "user:" + userId(session));
+        if (!decision.allowed()) {
+            throw new ApiException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "RATE_LIMITED",
+                    "操作过于频繁，请稍后再试"
+            );
         }
     }
 
@@ -194,15 +273,26 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         emit(conversationSessions.get(conversationId), event, payload);
     }
 
-    private void emit(Set<WebSocketSession> sessions, String event, Object payload) {
-        if (sessions == null || sessions.isEmpty()) {
+    /** 当前活跃连接数，供可观测性指标使用 */
+    public int activeConnectionCount() {
+        return sessions.size();
+    }
+
+    private void emit(Set<String> sessionIds, String event, Object payload) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
             return;
         }
         ObjectNode envelope = objectMapper.createObjectNode();
         envelope.put("kind", "event");
         envelope.put("event", event);
         envelope.set("payload", objectMapper.valueToTree(payload));
-        sendToSessions(sessions, envelope);
+        // 复制一份再遍历：发送失败会移除注册项，直接遍历原集合可能触发并发修改
+        for (String sessionId : Set.copyOf(sessionIds)) {
+            SessionEntry entry = sessions.get(sessionId);
+            if (entry != null) {
+                send(entry.session(), envelope);
+            }
+        }
     }
 
     private void sendSuccessAck(
@@ -222,7 +312,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         } else {
             envelope.set("data", objectMapper.valueToTree(data));
         }
-        send(session, envelope);
+        sendToOriginating(session, envelope);
     }
 
     private void sendErrorAck(
@@ -241,13 +331,18 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         ObjectNode error = envelope.putObject("error");
         error.put("code", code);
         error.put("message", message);
-        send(session, envelope);
+        sendToOriginating(session, envelope);
     }
 
-    private void sendToSessions(Set<WebSocketSession> sessions, JsonNode payload) {
-        for (WebSocketSession session : sessions) {
-            send(session, payload);
-        }
+    /**
+     * 回复命令来源连接。
+     *
+     * 处理器回调收到的是原始 session，需要换回注册时的装饰器，
+     * 否则这次写入会绕过缓冲队列重新变成阻塞写。
+     */
+    private void sendToOriginating(WebSocketSession session, JsonNode payload) {
+        SessionEntry entry = sessions.get(session.getId());
+        send(entry == null ? session : entry.session(), payload);
     }
 
     private void send(WebSocketSession session, JsonNode payload) {
@@ -255,11 +350,52 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         try {
-            synchronized (session) {
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+        } catch (IOException | IllegalStateException exception) {
+            // IllegalStateException 来自装饰器：缓冲区超限或发送超时，连接已被它关闭
+            log.warn("Unable to send realtime event sessionId={} reason={}",
+                    session.getId(), exception.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * 心跳：向所有连接发 ping，并清理长时间没有回应的连接。
+     *
+     * 半开连接不会触发 onClose，只有主动探测才能发现；否则它们会一直占据注册表，
+     * 使该用户显示为在线，发给他的消息也会静默丢失。
+     */
+    @Scheduled(fixedDelayString = "${openim.realtime.heartbeat-interval-millis:30000}")
+    public void sendHeartbeats() {
+        Instant deadline = Instant.now().minusMillis(pongTimeoutMillis);
+        for (SessionEntry entry : sessions.values()) {
+            if (entry.lastSeenAt().isBefore(deadline)) {
+                log.info("Closing stale realtime connection sessionId={} userId={}",
+                        entry.session().getId(), entry.userId());
+                closeQuietly(entry.session());
+                continue;
             }
-        } catch (IOException exception) {
-            log.warn("Unable to send realtime event sessionId={}", session.getId());
+            try {
+                if (entry.session().isOpen()) {
+                    entry.session().sendMessage(new org.springframework.web.socket.PingMessage());
+                }
+            } catch (IOException | IllegalStateException exception) {
+                closeQuietly(entry.session());
+            }
+        }
+    }
+
+    private void closeQuietly(WebSocketSession session) {
+        try {
+            session.close(CloseStatus.SESSION_NOT_RELIABLE);
+        } catch (IOException ignored) {
+            // 连接已经不可用，关闭失败无需处理；注册表项由 afterConnectionClosed 清理
+        }
+    }
+
+    private void touch(String sessionId) {
+        SessionEntry entry = sessions.get(sessionId);
+        if (entry != null) {
+            entry.touch();
         }
     }
 
@@ -288,13 +424,15 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        String sessionId = session.getId();
         String userId = userId(session);
-        remove(userSessions, userId, session);
-        remove(deviceSessions, new DeviceSessionKey(userId, deviceId(session)), session);
-        for (Set<WebSocketSession> sessions : conversationSessions.values()) {
-            sessions.remove(session);
+        sessions.remove(sessionId);
+        remove(userSessions, userId, sessionId);
+        remove(deviceSessions, new DeviceSessionKey(userId, deviceId(session)), sessionId);
+        for (Set<String> ids : conversationSessions.values()) {
+            ids.remove(sessionId);
         }
-        Set<WebSocketSession> remaining = userSessions.get(userId);
+        Set<String> remaining = userSessions.get(userId);
         if (remaining == null || remaining.isEmpty()) {
             userService.setUserOnline(userUuid(session), false);
         }
@@ -305,26 +443,18 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         log.warn("Realtime transport error sessionId={}", session.getId());
     }
 
-    private <K> void add(
-            Map<K, Set<WebSocketSession>> registry,
-            K key,
-            WebSocketSession session
-    ) {
-        registry.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet()).add(session);
+    private <K> void add(Map<K, Set<String>> registry, K key, String sessionId) {
+        registry.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet()).add(sessionId);
     }
 
-    private <K> void remove(
-            Map<K, Set<WebSocketSession>> registry,
-            K key,
-            WebSocketSession session
-    ) {
-        Set<WebSocketSession> sessions = registry.get(key);
-        if (sessions == null) {
+    private <K> void remove(Map<K, Set<String>> registry, K key, String sessionId) {
+        Set<String> ids = registry.get(key);
+        if (ids == null) {
             return;
         }
-        sessions.remove(session);
-        if (sessions.isEmpty()) {
-            registry.remove(key, sessions);
+        ids.remove(sessionId);
+        if (ids.isEmpty()) {
+            registry.remove(key, ids);
         }
     }
 
@@ -343,6 +473,41 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     /** 握手阶段已校验过令牌中的用户标识，此处解析必然成功 */
     private UUID userUuid(WebSocketSession session) {
         return UUID.fromString(userId(session));
+    }
+
+    /** 单条连接的状态。lastSeenAt 由命令和 pong 共同刷新 */
+    private static final class SessionEntry {
+        private final WebSocketSession session;
+        private final String userId;
+        private final String deviceId;
+        private volatile Instant lastSeenAt = Instant.now();
+
+        private SessionEntry(WebSocketSession session, String userId, String deviceId) {
+            this.session = session;
+            this.userId = userId;
+            this.deviceId = deviceId;
+        }
+
+        private WebSocketSession session() {
+            return session;
+        }
+
+        private String userId() {
+            return userId;
+        }
+
+        @SuppressWarnings("unused")
+        private String deviceId() {
+            return deviceId;
+        }
+
+        private Instant lastSeenAt() {
+            return lastSeenAt;
+        }
+
+        private void touch() {
+            lastSeenAt = Instant.now();
+        }
     }
 
     private record DeviceSessionKey(String userId, String deviceId) {

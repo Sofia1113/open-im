@@ -1,5 +1,6 @@
 package com.openim.server.web;
 
+import com.openim.server.support.AbstractPostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -18,11 +19,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties = {
         "openim.demo-login-enabled=false",
         "openim.token-secret=production-test-secret-with-more-than-32-characters",
-        "openim.client-origin=https://im.example.test"
+        "openim.client-origin=https://im.example.test",
+        // 与其他集成测试共用同一个容器，迁移集合必须一致，
+        // 否则 Flyway 会因为"已应用但本地未解析"的 seed 迁移拒绝启动
+        "spring.flyway.locations=classpath:db/migration,classpath:db/seed"
 })
 @AutoConfigureMockMvc
 @ActiveProfiles("prod")
-class ProductionSecurityIntegrationTest {
+class ProductionSecurityIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired
     private MockMvc mockMvc;
 
@@ -32,7 +36,7 @@ class ProductionSecurityIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "alice",
+                                  "username": "alice",
                                   "deviceId": "production-device",
                                   "deviceName": "Production"
                                 }

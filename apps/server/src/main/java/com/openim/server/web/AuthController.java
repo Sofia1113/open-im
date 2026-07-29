@@ -3,9 +3,9 @@ package com.openim.server.web;
 import com.openim.server.auth.TokenService;
 import com.openim.server.config.ProductionProfile;
 import com.openim.server.domain.DomainModels.User;
-import com.openim.server.domain.InMemoryStore;
 import com.openim.server.domain.Requests.DemoLogin;
 import com.openim.server.domain.Requests.Refresh;
+import com.openim.server.domain.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,17 +24,17 @@ import java.time.Instant;
 @RestController
 @RequestMapping("/api/v1/auth")
 public class AuthController {
-    private final InMemoryStore store;
+    private final UserService userService;
     private final TokenService tokenService;
     private final boolean demoLoginEnabled;
 
     public AuthController(
-            InMemoryStore store,
+            UserService userService,
             TokenService tokenService,
             @Value("${openim.demo-login-enabled:true}") boolean demoLoginEnabled,
             ProductionProfile productionProfile
     ) {
-        this.store = store;
+        this.userService = userService;
         this.tokenService = tokenService;
         this.demoLoginEnabled = demoLoginEnabled && !productionProfile.active();
     }
@@ -51,7 +51,7 @@ public class AuthController {
                     "演示登录未启用"
             );
         }
-        User user = store.getUser(input.userId());
+        User user = userService.getUserByUsername(input.username());
         return ApiEnvelope.success(issueSession(user, input.deviceId()), request);
     }
 
@@ -67,7 +67,7 @@ public class AuthController {
                         "AUTH_REQUIRED",
                         "刷新令牌无效"
                 ));
-        User user = store.getUser(payload.userId());
+        User user = userService.getUser(payload.userId());
         return ApiEnvelope.success(issueSession(user, payload.deviceId()), request);
     }
 

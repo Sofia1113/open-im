@@ -39,9 +39,47 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- 持久化：JdbcClient + HikariCP。
+             选择 JDBC 而非 JPA 的原因见 docs/01-architecture/ARCHITECTURE.md：
+             红包领取依赖 SELECT ... FOR UPDATE SKIP LOCKED 和条件更新，
+             需要对 SQL 与锁行为有精确控制，ORM 的抽象在此处是负担。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 集成测试使用真实 PostgreSQL，避免 H2 与 PG 的方言/锁语义差异 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -51,6 +89,27 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <!--
+                            固定 Docker API 版本供 Testcontainers 使用。
+
+                            Docker Engine 29 起把 MinAPIVersion 提升到 1.40，而 docker-java 3.4.2
+                            默认协商到更低版本，导致 /info 返回 400，Testcontainers 报
+                            "Could not find a valid Docker environment"。
+                            1.44 同时被 Docker 25+ 和 CI 环境接受。
+
+                            注意必须用系统属性 api.version，而不是 DOCKER_API_VERSION 环境变量：
+                            docker-java 的 DefaultDockerClientConfig 只在这个路径读取版本覆盖。
+                            升级 Testcontainers 到支持新版协商的版本后可以移除。
+                        -->
+                        <api.version>1.44</api.version>
+                    </systemPropertyVariables>
+                </configuration>
             </plugin>
         </plugins>
     </build>

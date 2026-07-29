@@ -2,7 +2,7 @@ package com.openim.server.auth;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.openim.server.domain.InMemoryStore;
+import com.openim.server.domain.service.UserService;
 import com.openim.server.web.RequestIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -10,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
+
+import java.util.UUID;
 
 /**
  * 认证拦截器
@@ -19,16 +21,16 @@ import org.springframework.web.servlet.HandlerInterceptor;
 @Component
 public class AuthenticationInterceptor implements HandlerInterceptor {
     private final TokenService tokenService;
-    private final InMemoryStore store;
+    private final UserService userService;
     private final ObjectMapper objectMapper;
 
     public AuthenticationInterceptor(
             TokenService tokenService,
-            InMemoryStore store,
+            UserService userService,
             ObjectMapper objectMapper
     ) {
         this.tokenService = tokenService;
-        this.store = store;
+        this.userService = userService;
         this.objectMapper = objectMapper;
     }
 
@@ -50,9 +52,9 @@ public class AuthenticationInterceptor implements HandlerInterceptor {
             writeUnauthorized(request, response);
             return false;
         }
-        try {
-            store.getUser(payload.userId());
-        } catch (RuntimeException ignored) {
+        // 令牌有效不代表账号仍然可用：封禁或注销后应立即拒绝，而不是等令牌自然过期
+        UUID userId = parseUserId(payload.userId());
+        if (userId == null || !userService.isActiveUser(userId)) {
             writeUnauthorized(request, response);
             return false;
         }
@@ -61,6 +63,14 @@ public class AuthenticationInterceptor implements HandlerInterceptor {
                 new AuthPrincipal(payload.userId(), payload.deviceId())
         );
         return true;
+    }
+
+    private static UUID parseUserId(String value) {
+        try {
+            return value == null ? null : UUID.fromString(value);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     private void writeUnauthorized(

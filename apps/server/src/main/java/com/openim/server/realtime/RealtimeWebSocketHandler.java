@@ -5,9 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.openim.server.domain.DomainModels.Conversation;
 import com.openim.server.domain.DomainModels.ImMessage;
-import com.openim.server.domain.InMemoryStore;
 import com.openim.server.domain.Requests.RtcSignal;
 import com.openim.server.domain.Requests.SendMessage;
+import com.openim.server.domain.service.CallService;
+import com.openim.server.domain.service.ConversationService;
+import com.openim.server.domain.service.MessageService;
+import com.openim.server.domain.service.UserService;
 import com.openim.server.web.ApiException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
@@ -38,7 +41,10 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
 
     private final ObjectMapper objectMapper;
     private final Validator validator;
-    private final InMemoryStore store;
+    private final ConversationService conversationService;
+    private final MessageService messageService;
+    private final CallService callService;
+    private final UserService userService;
     /** 用户 ID ↔ 会话集合映射 */
     private final Map<String, Set<WebSocketSession>> userSessions = new ConcurrentHashMap<>();
     /** 用户 + 设备 ID ↔ 会话集合映射，避免不同账号复用 deviceId 时串流 */
@@ -49,11 +55,17 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     public RealtimeWebSocketHandler(
             ObjectMapper objectMapper,
             Validator validator,
-            InMemoryStore store
+            ConversationService conversationService,
+            MessageService messageService,
+            CallService callService,
+            UserService userService
     ) {
         this.objectMapper = objectMapper;
         this.validator = validator;
-        this.store = store;
+        this.conversationService = conversationService;
+        this.messageService = messageService;
+        this.callService = callService;
+        this.userService = userService;
     }
 
     /** 连接建立时：注册到用户/设备/会话三级映射，标记用户在线 */
@@ -63,10 +75,10 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         String deviceId = deviceId(session);
         add(userSessions, userId, session);
         add(deviceSessions, new DeviceSessionKey(userId, deviceId), session);
-        for (Conversation conversation : store.listConversations(userId)) {
+        for (Conversation conversation : conversationService.listConversations(userUuid(session))) {
             add(conversationSessions, conversation.id(), session);
         }
-        store.setUserOnline(userId, true);
+        userService.setUserOnline(userUuid(session), true);
     }
 
     /** 处理收到的文本消息：解析命令信封并分发到对应处理器 */
@@ -112,7 +124,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     ) throws Exception {
         SendMessage input = objectMapper.treeToValue(payload, SendMessage.class);
         validate(input);
-        ImMessage message = store.createMessage(userId(session), input);
+        ImMessage message = messageService.createMessage(userUuid(session), input);
         emitToConversation(message.conversationId(), "message:created", Map.of(
                 "eventId", UUID.randomUUID().toString(),
                 "message", message
@@ -151,9 +163,9 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             );
         }
         String fromUserId = userId(session);
-        String targetDeviceId = store.validateRtcSignal(
+        String targetDeviceId = callService.validateRtcSignal(
                 input.roomId(),
-                fromUserId,
+                userUuid(session),
                 input.targetUserId()
         );
         ObjectNode forwarded = objectMapper.valueToTree(input);
@@ -284,7 +296,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         }
         Set<WebSocketSession> remaining = userSessions.get(userId);
         if (remaining == null || remaining.isEmpty()) {
-            store.setUserOnline(userId, false);
+            userService.setUserOnline(userUuid(session), false);
         }
     }
 
@@ -326,6 +338,11 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         return (String) session.getAttributes().get(
                 WebSocketAuthenticationInterceptor.DEVICE_ID
         );
+    }
+
+    /** 握手阶段已校验过令牌中的用户标识，此处解析必然成功 */
+    private UUID userUuid(WebSocketSession session) {
+        return UUID.fromString(userId(session));
     }
 
     private record DeviceSessionKey(String userId, String deviceId) {

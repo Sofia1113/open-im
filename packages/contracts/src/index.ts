@@ -54,9 +54,14 @@ export const messageSchema = z.object({
 
 export type Message = z.infer<typeof messageSchema>;
 
-/** 演示登录请求 */
+/**
+ * 演示登录请求
+ *
+ * 用 username 而非 userId：服务端用户主键是 uuid，
+ * 让客户端硬编码 uuid 既不可读，也会在重建演示数据后失效。
+ */
 export const demoLoginSchema = z.object({
-  userId: z.string().min(1),
+  username: z.string().min(1).max(64),
   deviceId: z.string().min(3).max(128),
   deviceName: z.string().min(1).max(128),
 });

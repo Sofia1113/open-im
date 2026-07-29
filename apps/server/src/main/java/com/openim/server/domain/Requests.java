@@ -18,8 +18,14 @@ public final class Requests {
     private Requests() {
     }
 
+    /**
+     * 演示登录。
+     *
+     * 用 username 而非 userId：迁移到数据库后用户主键是 uuid，
+     * 让客户端硬编码 uuid 既不可读也会在重建演示数据后失效。
+     */
     public record DemoLogin(
-            @NotBlank String userId,
+            @NotBlank @Size(max = 64) String username,
             @NotBlank @Size(max = 128) String deviceId,
             @NotBlank @Size(max = 128) String deviceName
     ) {

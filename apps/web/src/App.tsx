@@ -80,7 +80,7 @@ export function App() {
 function LoginScreen({ onLogin }: { onLogin: (session: Session) => void }) {
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** 演示账号列表 */
+  /** 演示账号列表。id 是登录用的 username，服务端据此解析真实的 uuid 主键 */
   const demoUsers = [
     { id: "alice", name: "Alice 林夏", avatar: "林", color: "mint" },
     { id: "bob", name: "Bob 陈默", avatar: "陈", color: "blue" },
@@ -88,14 +88,14 @@ function LoginScreen({ onLogin }: { onLogin: (session: Session) => void }) {
   ];
 
   /** 执行演示登录 */
-  const login = async (userId: string) => {
-    setLoadingId(userId);
+  const login = async (username: string) => {
+    setLoadingId(username);
     setError(null);
     try {
       const session = await apiRequest<Session>("/api/v1/auth/demo-login", null, {
         method: "POST",
         body: JSON.stringify({
-          userId,
+          username,
           deviceId: getDeviceId(),
           deviceName: navigator.userAgent.includes("Mac") ? "Mac 浏览器" : "Web 浏览器",
         }),

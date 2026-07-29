@@ -4,9 +4,10 @@ import com.openim.server.auth.AuthPrincipal;
 import com.openim.server.domain.DomainModels.RedPacket;
 import com.openim.server.domain.DomainResults.ClaimedRedPacket;
 import com.openim.server.domain.DomainResults.CreatedRedPacket;
-import com.openim.server.domain.InMemoryStore;
 import com.openim.server.domain.Requests.ClaimRedPacket;
 import com.openim.server.domain.Requests.CreateRedPacket;
+import com.openim.server.domain.service.DomainErrors;
+import com.openim.server.domain.service.RedPacketService;
 import com.openim.server.realtime.RealtimeWebSocketHandler;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -28,14 +29,14 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/red-packets")
 public class RedPacketController {
-    private final InMemoryStore store;
+    private final RedPacketService redPacketService;
     private final RealtimeWebSocketHandler realtime;
 
     public RedPacketController(
-            InMemoryStore store,
+            RedPacketService redPacketService,
             RealtimeWebSocketHandler realtime
     ) {
-        this.store = store;
+        this.redPacketService = redPacketService;
         this.realtime = realtime;
     }
 
@@ -45,7 +46,7 @@ public class RedPacketController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        CreatedRedPacket result = store.createRedPacket(auth.userId(), input);
+        CreatedRedPacket result = redPacketService.createRedPacket(auth.userUuid(), input);
         realtime.emitToConversation(
                 result.redPacket().conversationId(),
                 "message:created",
@@ -68,7 +69,10 @@ public class RedPacketController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        return ApiEnvelope.success(store.getRedPacket(id, auth.userId()), request);
+        return ApiEnvelope.success(
+                redPacketService.getRedPacket(DomainErrors.parseId(id, "红包"), auth.userUuid()),
+                request
+        );
     }
 
     @PostMapping("/{id}/claim")
@@ -78,9 +82,9 @@ public class RedPacketController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        ClaimedRedPacket result = store.claimRedPacket(
-                id,
-                auth.userId(),
+        ClaimedRedPacket result = redPacketService.claimRedPacket(
+                DomainErrors.parseId(id, "红包"),
+                auth.userUuid(),
                 input.idempotencyKey()
         );
         realtime.emitToConversation(

@@ -11,7 +11,7 @@
 - 服务端成员权限校验、统一错误码、健康检查和严格输入校验。
 - 响应式 Web 工作台和红包/通话交互界面。
 
-> 红包余额为本地虚拟资产，不连接真实支付。MVP 使用内存仓储，进程重启会恢复种子数据，禁止直接用于生产。
+> 红包余额为本地虚拟资产，不连接真实支付。数据持久化到 PostgreSQL，红包账务使用复式记账并可对账；但认证、限流和可观测性尚未达到生产标准，详见 [当前实现状态](./docs/03-delivery/IMPLEMENTATION_STATUS.md)。
 
 ## 工程结构
 
@@ -29,16 +29,26 @@ docs                     PRD、架构、专项设计和验收文档
 - Java 21+、Maven 3.9+
 - Node.js 22+（用于 Web 客户端）
 - pnpm 10+
+- Docker（提供本地 PostgreSQL，集成测试也依赖它运行 Testcontainers）
 - Chrome、Edge 或 Safari 最近版本
 
 ### 安装与启动
 
 ```bash
+docker compose up -d     # 启动 PostgreSQL
 pnpm install
 pnpm dev
 ```
 
+服务端启动时由 Flyway 自动建表并写入演示数据，无需手工初始化。
+
 打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)，选择 Alice、Bob 或 Carol 登录。可使用普通窗口和无痕窗口模拟两个独立客户端。
+
+需要重置数据时：
+
+```bash
+docker compose down -v && docker compose up -d
+```
 
 默认地址：
 
@@ -55,14 +65,18 @@ pnpm dev
 SPRING_PROFILES_ACTIVE=prod \
 TOKEN_SECRET='<至少 32 字符的随机密钥>' \
 CLIENT_ORIGIN='https://im.example.com' \
+DATABASE_URL='jdbc:postgresql://<host>:5432/openim' \
+DATABASE_USER='<user>' \
+DATABASE_PASSWORD='<password>' \
 java -jar apps/server/target/open-im-server-0.1.0.jar
 ```
 
-`prod` profile 会禁用演示登录，并在缺少密钥、密钥过短或误用本地演示密钥时拒绝启动。该 profile 只是安全启动闸门，不代表当前内存仓储已经适合生产。
+`prod` profile 会禁用演示登录、不加载演示种子数据，并在缺少密钥、密钥过短或误用本地演示密钥时拒绝启动。该 profile 是安全启动闸门，不代表整体已达到生产标准。
 
 ### 验证
 
 ```bash
+docker compose up -d     # 集成测试需要 Docker 运行 Testcontainers
 pnpm typecheck
 pnpm test
 pnpm build
@@ -113,14 +127,16 @@ pnpm --filter @open-im/web preview
 - [当前实现状态](./docs/03-delivery/IMPLEMENTATION_STATUS.md)
 - [Java 服务端说明](./apps/server/README.md)
 
-## MVP 边界
+## 当前边界
 
-当前代码用于产品评审、交互演示和下一阶段开发基线：
+数据已持久化到 PostgreSQL，账务使用复式记账。剩余距离生产的差距：
 
-- 数据、令牌和在线状态保存在单进程内存中；重启不保留。
-- WebRTC 使用 Mesh 和公共 STUN，没有部署 TURN/SFU。
-- 已实现 Web 客户端；Electron、iOS、Android 通过共享契约后续接入。
-- 演示令牌已签名但未实现设备刷新令牌撤销表、风控和生产密钥管理。
-- 附件、离线推送、消息撤回、已读游标和管理后台列入 M2。
+- **多实例**：WebSocket 连接注册表仍在 JVM 内存中，起第二个实例会丢消息，需要 Redis Pub/Sub 或 MQ 扇出。Outbox 表已就绪但尚未驱动推送。
+- **认证**：令牌为自实现的 HMAC 签名，缺少标准 JWT 的密钥轮换、刷新令牌轮换与撤销表；客户端未接入自动刷新。
+- **防护**：登录、发消息、呼叫、信令和红包均未限流；缺少 CSP/HSTS 等安全响应头。
+- **可观测性**：只有 health/info 端点，无指标、链路和结构化日志。
+- **音视频**：WebRTC 使用 Mesh 和公共 STUN，未部署 TURN/SFU。
+- **客户端**：已实现 Web；Electron、iOS、Android 通过共享契约后续接入。
+- **功能**：附件、离线推送、消息撤回、群成员管理和管理后台列入 M2。
 
-进入真实业务前应依次完成 PostgreSQL、Redis、Outbox Worker、对象存储、TURN/SFU、离线推送、内容安全、压测、渗透测试和隐私合规评审。
+进入真实业务前还需完成 Redis、对象存储、TURN/SFU、离线推送、内容安全、压测、渗透测试和隐私合规评审。

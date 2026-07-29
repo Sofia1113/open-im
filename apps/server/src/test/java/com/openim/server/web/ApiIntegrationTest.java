@@ -2,6 +2,7 @@ package com.openim.server.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openim.server.support.AbstractPostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -23,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-class ApiIntegrationTest {
+class ApiIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired
     private MockMvc mockMvc;
 
@@ -64,7 +65,7 @@ class ApiIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "alice",
+                                  "username": "alice",
                                   "deviceId": "integration-device",
                                   "deviceName": "Integration Test"
                                 }

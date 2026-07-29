@@ -7,6 +7,30 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
+  datasource:
+    # 生产环境必须显式提供，不保留本地默认值
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USER}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DATABASE_POOL_SIZE:20}
+      minimum-idle: 5
+
+  flyway:
+    # 生产不加载任何演示种子数据
+    locations: classpath:db/migration
+    validate-on-migrate: true
+    clean-disabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
 openim:
   demo-login-enabled: false
   token-secret: ${TOKEN_SECRET}

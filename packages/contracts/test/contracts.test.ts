@@ -33,7 +33,7 @@ describe("shared contracts", () => {
 
   it("rejects oversized device identifiers", () => {
     const parsed = demoLoginSchema.safeParse({
-      userId: "alice",
+      username: "alice",
       deviceId: "d".repeat(129),
       deviceName: "Browser",
     });

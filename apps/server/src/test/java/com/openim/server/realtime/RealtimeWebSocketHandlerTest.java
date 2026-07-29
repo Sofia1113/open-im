@@ -1,7 +1,11 @@
 package com.openim.server.realtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.openim.server.domain.InMemoryStore;
+import com.openim.server.domain.service.CallService;
+import com.openim.server.domain.service.ConversationService;
+import com.openim.server.domain.service.MessageService;
+import com.openim.server.domain.service.UserService;
+import com.openim.server.support.DemoUsers;
 import jakarta.validation.Validator;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
@@ -9,6 +13,7 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -19,28 +24,32 @@ import static org.mockito.Mockito.when;
 class RealtimeWebSocketHandlerTest {
     @Test
     void isolatesTheSameDeviceIdAcrossDifferentUsers() throws Exception {
-        InMemoryStore store = mock(InMemoryStore.class);
-        when(store.listConversations(any())).thenReturn(List.of());
+        ConversationService conversationService = mock(ConversationService.class);
+        when(conversationService.listConversations(any())).thenReturn(List.of());
         RealtimeWebSocketHandler handler = new RealtimeWebSocketHandler(
                 new ObjectMapper(),
                 mock(Validator.class),
-                store
+                conversationService,
+                mock(MessageService.class),
+                mock(CallService.class),
+                mock(UserService.class)
         );
-        WebSocketSession alice = session("alice", "shared-device");
-        WebSocketSession bob = session("bob", "shared-device");
+        WebSocketSession alice = session(DemoUsers.ALICE, "shared-device");
+        WebSocketSession bob = session(DemoUsers.BOB, "shared-device");
 
         handler.afterConnectionEstablished(alice);
         handler.afterConnectionEstablished(bob);
-        handler.emitToDevice("bob", "shared-device", "rtc:offer", Map.of("roomId", "room-1"));
+        handler.emitToDevice(DemoUsers.BOB.toString(), "shared-device", "rtc:offer",
+                Map.of("roomId", "room-1"));
 
         verify(bob).sendMessage(any(TextMessage.class));
         verify(alice, never()).sendMessage(any(TextMessage.class));
     }
 
-    private WebSocketSession session(String userId, String deviceId) {
+    private WebSocketSession session(UUID userId, String deviceId) {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.getAttributes()).thenReturn(Map.of(
-                WebSocketAuthenticationInterceptor.USER_ID, userId,
+                WebSocketAuthenticationInterceptor.USER_ID, userId.toString(),
                 WebSocketAuthenticationInterceptor.DEVICE_ID, deviceId
         ));
         when(session.isOpen()).thenReturn(true);

@@ -1,7 +1,7 @@
 package com.openim.server.realtime;
 
 import com.openim.server.auth.TokenService;
-import com.openim.server.domain.InMemoryStore;
+import com.openim.server.domain.service.UserService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -12,6 +12,7 @@ import org.springframework.web.socket.server.HandshakeInterceptor;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * WebSocket 握手认证拦截器
@@ -24,11 +25,11 @@ public class WebSocketAuthenticationInterceptor implements HandshakeInterceptor 
     public static final String DEVICE_ID = "openim.deviceId";
 
     private final TokenService tokenService;
-    private final InMemoryStore store;
+    private final UserService userService;
 
-    public WebSocketAuthenticationInterceptor(TokenService tokenService, InMemoryStore store) {
+    public WebSocketAuthenticationInterceptor(TokenService tokenService, UserService userService) {
         this.tokenService = tokenService;
-        this.store = store;
+        this.userService = userService;
     }
 
     @Override
@@ -49,9 +50,14 @@ public class WebSocketAuthenticationInterceptor implements HandshakeInterceptor 
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }
+        UUID userId;
         try {
-            store.getUser(payload.userId());
-        } catch (RuntimeException ignored) {
+            userId = UUID.fromString(payload.userId());
+        } catch (IllegalArgumentException ignored) {
+            response.setStatusCode(HttpStatus.UNAUTHORIZED);
+            return false;
+        }
+        if (!userService.isActiveUser(userId)) {
             response.setStatusCode(HttpStatus.UNAUTHORIZED);
             return false;
         }

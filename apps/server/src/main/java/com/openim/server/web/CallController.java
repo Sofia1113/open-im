@@ -3,8 +3,9 @@ package com.openim.server.web;
 import com.openim.server.auth.AuthPrincipal;
 import com.openim.server.domain.DomainModels.CallParticipant;
 import com.openim.server.domain.DomainModels.CallRoom;
-import com.openim.server.domain.InMemoryStore;
 import com.openim.server.domain.Requests.CreateCall;
+import com.openim.server.domain.service.CallService;
+import com.openim.server.domain.service.DomainErrors;
 import com.openim.server.realtime.RealtimeWebSocketHandler;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -25,11 +26,11 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/calls")
 public class CallController {
-    private final InMemoryStore store;
+    private final CallService callService;
     private final RealtimeWebSocketHandler realtime;
 
-    public CallController(InMemoryStore store, RealtimeWebSocketHandler realtime) {
-        this.store = store;
+    public CallController(CallService callService, RealtimeWebSocketHandler realtime) {
+        this.callService = callService;
         this.realtime = realtime;
     }
 
@@ -39,7 +40,7 @@ public class CallController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        CallRoom room = store.createCall(auth.userId(), auth.deviceId(), input);
+        CallRoom room = callService.createCall(auth.userUuid(), auth.deviceId(), input);
         room.participants().stream()
                 .filter(participant -> !participant.userId().equals(auth.userId()))
                 .forEach(participant -> realtime.emitToUser(
@@ -56,7 +57,10 @@ public class CallController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        return ApiEnvelope.success(store.getCall(id, auth.userId()), request);
+        return ApiEnvelope.success(
+                callService.getCall(DomainErrors.parseId(id, "通话"), auth.userUuid()),
+                request
+        );
     }
 
     @PostMapping("/{id}/accept")
@@ -65,7 +69,8 @@ public class CallController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        CallRoom room = store.acceptCall(id, auth.userId(), auth.deviceId());
+        CallRoom room = callService.acceptCall(
+                DomainErrors.parseId(id, "通话"), auth.userUuid(), auth.deviceId());
         CallParticipant participant = new CallParticipant(
                 auth.userId(),
                 "joined",
@@ -88,7 +93,7 @@ public class CallController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        CallRoom room = store.rejectCall(id, auth.userId());
+        CallRoom room = callService.rejectCall(DomainErrors.parseId(id, "通话"), auth.userUuid());
         if ("ended".equals(room.status())) {
             emitToParticipants(room, "call:ended", Map.of(
                     "roomId", room.id(),
@@ -104,7 +109,7 @@ public class CallController {
             HttpServletRequest request
     ) {
         AuthPrincipal auth = AuthPrincipal.from(request);
-        CallRoom room = store.leaveCall(id, auth.userId());
+        CallRoom room = callService.leaveCall(DomainErrors.parseId(id, "通话"), auth.userUuid());
         emitToParticipants(room, "call:participant:left", Map.of(
                 "roomId", room.id(),
                 "userId", auth.userId(),

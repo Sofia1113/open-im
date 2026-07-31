@@ -20,10 +20,10 @@
     <properties>
         <java.version>21</java.version>
         <!-- Spring Boot BOM 不管理该依赖（它由 Spring Security BOM 提供），需显式声明版本 -->
-        <nimbus-jose-jwt.version>10.3</nimbus-jose-jwt.version>
-        <bucket4j.version>8.14.0</bucket4j.version>
-        <jacoco.version>0.8.13</jacoco.version>
-        <cyclonedx.version>2.9.1</cyclonedx.version>
+        <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
+        <bucket4j.version>8.19.0</bucket4j.version>
+        <jacoco.version>0.8.15</jacoco.version>
+        <cyclonedx.version>2.9.2</cyclonedx.version>
         <springdoc.version>2.8.6</springdoc.version>
         <!--
             覆盖率下限。设为当前实际水平略低一点，用于防止回退而不是追求数字：

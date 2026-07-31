@@ -22,6 +22,7 @@ import java.util.Map;
 public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    /** 处理业务异常 {@link ApiException}：透传其 HTTP 状态码、业务错误码与详细信息 */
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiEnvelope.Failure> handleApiException(
             ApiException exception,
@@ -37,6 +38,7 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    /** 处理参数校验失败：返回 400 VALIDATION_ERROR，details 为字段名到错误消息的映射 */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiEnvelope.Failure> handleValidation(
             MethodArgumentNotValidException exception,
@@ -56,6 +58,7 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    /** 兜底处理未预期异常：记录错误日志并返回 500 INTERNAL_ERROR，不向客户端暴露异常细节 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiEnvelope.Failure> handleUnexpected(
             Exception exception,

@@ -43,6 +43,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
         this.allowedOrigins = origins.toArray(String[]::new);
     }
 
+    /** 允许构造函数中白名单化的来源跨域访问全部路径(生产环境强制 HTTPS) */
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
@@ -68,6 +69,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .addPathPatterns("/api/v1/**");
     }
 
+    /** 返回允许跨域访问的来源列表(拷贝副本,防止外部修改内部状态) */
     public String[] allowedOrigins() {
         return allowedOrigins.clone();
     }

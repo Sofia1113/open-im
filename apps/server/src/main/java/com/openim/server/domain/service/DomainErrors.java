@@ -15,22 +15,27 @@ public final class DomainErrors {
     private DomainErrors() {
     }
 
+    /** 400 请求错误。code 用于客户端区分错误类型（如 SELF_CONVERSATION） */
     public static ApiException badRequest(String code, String message) {
         return new ApiException(HttpStatus.BAD_REQUEST, code, message);
     }
 
+    /** 400 参数校验错误。统一使用 VALIDATION_ERROR 错误码，客户端只需按 message 提示 */
     public static ApiException validation(String message) {
         return new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", message);
     }
 
+    /** 409 资源状态冲突：重复提交、余额不足、红包已领完等需要客户端区分处理的场景 */
     public static ApiException conflict(String code, String message) {
         return new ApiException(HttpStatus.CONFLICT, code, message);
     }
 
+    /** 404 资源不存在。统一 NOT_FOUND 错误码 */
     public static ApiException notFound(String message) {
         return new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", message);
     }
 
+    /** 403 权限不足。code 区分越权种类（NOT_A_MEMBER、INSUFFICIENT_ROLE 等） */
     public static ApiException forbidden(String code, String message) {
         return new ApiException(HttpStatus.FORBIDDEN, code, message);
     }

@@ -75,30 +75,37 @@ public class DomainMetrics {
         }
     }
 
+    /** 记录一条成功写入的消息 */
     public void recordMessageSent() {
         messagesSent.increment();
     }
 
+    /** 记录一个红包的创建 */
     public void recordRedPacketCreated() {
         redPacketsCreated.increment();
     }
 
+    /** 记录一次红包领取成功 */
     public void recordRedPacketClaimed() {
         redPacketsClaimed.increment();
     }
 
+    /** 记录一个过期红包被退款 */
     public void recordRedPacketRefunded() {
         redPacketsRefunded.increment();
     }
 
+    /** 记录一次被限流拒绝的请求 */
     public void recordRateLimitRejection() {
         rateLimitRejections.increment();
     }
 
+    /** 记录一次刷新令牌重放检测（并撤销对应设备） */
     public void recordTokenReuseDetected() {
         tokenReuseDetections.increment();
     }
 
+    /** 记录一次实时事件发送失败（含缓冲区溢出） */
     public void recordRealtimeSendFailure() {
         realtimeSendFailures.increment();
     }

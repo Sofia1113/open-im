@@ -9,12 +9,36 @@
 -- 用户
 -- ============================================================
 
-INSERT INTO users (id, username, display_name, avatar, status, presence, last_seen_at)
+INSERT INTO users (id, username, email, display_name, avatar, status, presence, last_seen_at)
 VALUES
-    ('11111111-1111-1111-1111-111111111111', 'alice', 'Alice 林夏', '林', 'ACTIVE', 'offline', now()),
-    ('22222222-2222-2222-2222-222222222222', 'bob',   'Bob 陈默',   '陈', 'ACTIVE', 'offline', now()),
-    ('33333333-3333-3333-3333-333333333333', 'carol', 'Carol 周晴', '周', 'ACTIVE', 'offline', now())
+    ('11111111-1111-1111-1111-111111111111', 'alice', 'alice@example.test', 'Alice 林夏', '林', 'ACTIVE', 'offline', now()),
+    ('22222222-2222-2222-2222-222222222222', 'bob',   'bob@example.test',   'Bob 陈默',   '陈', 'ACTIVE', 'offline', now()),
+    ('33333333-3333-3333-3333-333333333333', 'carol', 'carol@example.test', 'Carol 周晴', '周', 'ACTIVE', 'offline', now())
 ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================
+-- 演示凭证
+-- ============================================================
+--
+-- 三个演示账号的密码都是 openim-demo-2026，用于本地验收凭证登录链路。
+--
+-- 哈希写死而非运行时生成：种子数据必须可重复执行且不依赖应用代码，
+-- 而 BCrypt 每次加盐的结果不同，无法用 SQL 表达"等价于某个明文"。
+-- 三个账号共用同一个哈希是因为明文相同——正常注册不会出现这种情况，
+-- 每个用户的 salt 由 BCryptPasswordEncoder 独立生成。
+--
+-- 这些凭证只随演示种子数据加载：prod profile 的 flyway.locations
+-- 不含 db/seed，因此生产环境不存在这些账号。
+
+INSERT INTO user_credentials (user_id, password_hash)
+VALUES
+    ('11111111-1111-1111-1111-111111111111',
+     '$2y$12$CHLupiDTX2r7qjmKBVyge.FdtGT6xF2W2Rf3D4hCOmN6MpBbFTs4a'),
+    ('22222222-2222-2222-2222-222222222222',
+     '$2y$12$CHLupiDTX2r7qjmKBVyge.FdtGT6xF2W2Rf3D4hCOmN6MpBbFTs4a'),
+    ('33333333-3333-3333-3333-333333333333',
+     '$2y$12$CHLupiDTX2r7qjmKBVyge.FdtGT6xF2W2Rf3D4hCOmN6MpBbFTs4a')
+ON CONFLICT (user_id) DO NOTHING;
 
 -- ============================================================
 -- 钱包账户：每人 500.00 元 = 50000 分

@@ -23,14 +23,17 @@ public class ApiException extends RuntimeException {
         this.details = details;
     }
 
+    /** 异常对应的 HTTP 状态码 */
     public HttpStatus status() {
         return status;
     }
 
+    /** 业务错误码 */
     public String code() {
         return code;
     }
 
+    /** 可选详细信息 */
     public Object details() {
         return details;
     }

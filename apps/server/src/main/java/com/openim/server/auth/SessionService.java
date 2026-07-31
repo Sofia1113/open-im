@@ -40,6 +40,7 @@ public class SessionService {
     private final DeviceRevocationService deviceRevocationService;
     private final AuditRepository auditRepository;
     private final UserService userService;
+    private final SessionValidityCache sessionValidityCache;
     private final long accessTokenTtlSeconds;
     private final long refreshTokenTtlSeconds;
     private final long refreshGraceSeconds;
@@ -50,6 +51,7 @@ public class SessionService {
             DeviceRevocationService deviceRevocationService,
             AuditRepository auditRepository,
             UserService userService,
+            SessionValidityCache sessionValidityCache,
             @Value("${openim.jwt.access-token-ttl-seconds:900}") long accessTokenTtlSeconds,
             @Value("${openim.jwt.refresh-token-ttl-seconds:604800}") long refreshTokenTtlSeconds,
             @Value("${openim.jwt.refresh-grace-seconds:60}") long refreshGraceSeconds
@@ -59,6 +61,7 @@ public class SessionService {
         this.deviceRevocationService = deviceRevocationService;
         this.auditRepository = auditRepository;
         this.userService = userService;
+        this.sessionValidityCache = sessionValidityCache;
         this.accessTokenTtlSeconds = accessTokenTtlSeconds;
         this.refreshTokenTtlSeconds = refreshTokenTtlSeconds;
         this.refreshGraceSeconds = refreshGraceSeconds;
@@ -71,6 +74,9 @@ public class SessionService {
         IssuedPair pair = issuePair(user.id(), deviceId);
         deviceRepository.upsert(deviceId, userId, deviceName,
                 hash(pair.refreshToken()), pair.refreshExpiresAt());
+        // upsert 会把 revoked_at 清空——设备可以"复活"。若某个实例缓存了
+        // 这台设备此前的"已撤销"结果，不失效的话新令牌会被拒到缓存过期为止。
+        sessionValidityCache.invalidate(deviceId, userId);
         auditRepository.recordUserAction(userId, "auth.login", Map.of("deviceId", deviceId));
         return new Session(pair.accessToken(), pair.refreshToken(), pair.accessExpiresAt(), user);
     }
@@ -139,6 +145,7 @@ public class SessionService {
     @Transactional
     public void logout(UUID userId, String deviceId) {
         deviceRepository.revoke(deviceId, "logout");
+        sessionValidityCache.invalidate(deviceId, userId);
         auditRepository.recordUserAction(userId, "auth.logout", Map.of("deviceId", deviceId));
     }
 
@@ -146,6 +153,9 @@ public class SessionService {
     @Transactional
     public int logoutAllDevices(UUID userId, String reason) {
         int revoked = deviceRepository.revokeAllForUser(userId, reason);
+        // 受影响的 deviceId 集合此处未知，整体清空。改密与风控处置是低频操作，
+        // 多一次全局回源换取"绝不漏掉一个设备"是值得的。
+        sessionValidityCache.invalidateAll();
         auditRepository.recordUserAction(userId, "auth.revoke_all_devices",
                 Map.of("reason", reason, "revokedCount", revoked));
         return revoked;
@@ -156,6 +166,7 @@ public class SessionService {
         return deviceRepository.isActive(deviceId, userId);
     }
 
+    /** 为设备签发一对访问令牌与刷新令牌，有效期各自独立配置 */
     private IssuedPair issuePair(String userId, String deviceId) {
         TokenService.IssuedToken access =
                 tokenService.issue(userId, deviceId, ACCESS, accessTokenTtlSeconds);
@@ -165,6 +176,7 @@ public class SessionService {
                 access.token(), refresh.token(), access.expiresAt(), refresh.expiresAt());
     }
 
+    /** 解析令牌中的用户 ID；非法 UUID 按无效令牌拒绝，不区分错误原因 */
     private UUID parseUserId(String value) {
         try {
             return UUID.fromString(value);

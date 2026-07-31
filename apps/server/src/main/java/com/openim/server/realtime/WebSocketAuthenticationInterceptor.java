@@ -35,6 +35,14 @@ public class WebSocketAuthenticationInterceptor implements HandshakeInterceptor 
         this.deviceRepository = deviceRepository;
     }
 
+    /**
+     * 握手鉴权：校验 token、deviceId 与设备会话有效性，通过后把用户信息
+     * 注入会话属性。
+     *
+     * 任一环节失败（token 无效/过期、deviceId 与 token 不匹配、设备会话
+     * 已失效）都返回 false 并以 401 拒绝握手。WebSocket 没有重试会话，
+     * 握手是唯一的一次性鉴权入口，必须在建立连接之前把住。
+     */
     @Override
     public boolean beforeHandshake(
             ServerHttpRequest request,
@@ -69,6 +77,7 @@ public class WebSocketAuthenticationInterceptor implements HandshakeInterceptor 
         return true;
     }
 
+    /** 握手完成后的钩子：无需额外处理，鉴权结果已在 {@link #beforeHandshake} 写入会话属性 */
     @Override
     public void afterHandshake(
             ServerHttpRequest request,

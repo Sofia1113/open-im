@@ -2,11 +2,16 @@
 #
 #   docker compose up -d                             仅启动 postgres + redis
 #   docker compose --profile full up -d --build      连同服务端一起以容器方式运行
+#   docker compose --profile e2e up -d               E2E 专用的隔离数据库
 #   docker compose down -v                           停止并清空所有数据
 #
 # 宿主机直接运行服务端时：
 #   PostgreSQL：jdbc:postgresql://127.0.0.1:5432/openim
 #   Redis：redis://127.0.0.1:6379
+#
+# 注意：若宿主机自己装了 PostgreSQL 并监听 5432，它会优先于 Docker 的端口映射
+# 被连接（表现为 `role "openim" does not exist`）。e2e profile 使用独立端口，
+# 正是为了绕开这个冲突。
 
 services:
   postgres:
@@ -82,6 +87,130 @@ services:
       retries: 5
       start_period: 40s
     restart: unless-stopped
+
+  # ── 多实例验证 ──────────────────────────────────────────────
+  #
+  #   docker compose --profile multi up -d --build
+  #   ./load-test/verify-multi-instance.sh
+  #
+  # 两个实例共享同一个 PostgreSQL 与 Redis，各自暴露不同端口。
+  # 这是验证"跨实例"这件事的唯一方式——单实例下所有跨实例代码路径
+  # （Streams 消费组、presence 共享、限流配额共享、缓存失效广播）
+  # 都会退化成本地操作，看不出任何问题。
+  #
+  # 刻意不加负载均衡：直接访问各实例才能断言"消息是从 A 发出、在 B 收到的"。
+  # 经过 LB 就无法确定请求落在哪个实例，也就无法证明跨实例投递真的发生了。
+  #
+  # INSTANCE_ID 显式指定而不是让它自动生成：验证脚本需要按名字对应
+  # Redis 里的消费组（组名就是 instanceId）。
+  server-a:
+    profiles: ["multi"]
+    build:
+      context: ./apps/server
+      dockerfile: Dockerfile
+    container_name: openim-server-a
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3001
+      INSTANCE_ID: instance-a
+      DATABASE_URL: jdbc:postgresql://postgres:5432/openim
+      DATABASE_USER: openim
+      DATABASE_PASSWORD: openim
+      REDIS_URL: redis://redis:6379
+      CLIENT_ORIGIN: http://localhost:5173
+      TOKEN_SECRET: local-compose-secret-with-more-than-32-characters
+      TZ: UTC
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/actuator/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 40s
+
+  server-b:
+    profiles: ["multi"]
+    build:
+      context: ./apps/server
+      dockerfile: Dockerfile
+    container_name: openim-server-b
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      # 容器内仍监听 3001，只有宿主端口不同——两个实例的配置必须尽可能一致，
+      # 否则测出来的差异可能来自配置而不是实例数
+      PORT: 3001
+      INSTANCE_ID: instance-b
+      DATABASE_URL: jdbc:postgresql://postgres:5432/openim
+      DATABASE_USER: openim
+      DATABASE_PASSWORD: openim
+      REDIS_URL: redis://redis:6379
+      CLIENT_ORIGIN: http://localhost:5173
+      TOKEN_SECRET: local-compose-secret-with-more-than-32-characters
+      TZ: UTC
+    ports:
+      - "3002:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/actuator/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 40s
+
+  # ── E2E 专用依赖 ────────────────────────────────────────────
+  #
+  # 独立端口 + 独立卷，两个理由：
+  #   1. **端口冲突**：宿主机自带的 PostgreSQL 监听 5432 时会抢在 Docker 之前
+  #      被连上，服务端报 `role "openim" does not exist`。用一个不常见的端口绕开。
+  #   2. **数据隔离**：E2E 会注册账号、发消息、动余额。跑在开发库上会不断污染
+  #      本地数据，而 `down -v` 重置又会连开发数据一起清掉。
+  #
+  # tmpfs 而非命名卷：E2E 数据没有保留价值，放内存里还能让 Flyway 迁移更快。
+  postgres-e2e:
+    profiles: ["e2e"]
+    image: postgres:17-alpine
+    container_name: openim-postgres-e2e
+    environment:
+      POSTGRES_DB: openim
+      POSTGRES_USER: openim
+      POSTGRES_PASSWORD: openim
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openim -d openim"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  redis-e2e:
+    profiles: ["e2e"]
+    image: redis:7-alpine
+    container_name: openim-redis-e2e
+    # 不持久化：E2E 的在线状态与事件流都是一次性的
+    command: redis-server --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
 
 volumes:
   postgres-data:

@@ -60,6 +60,7 @@ public class DeviceRepository {
                 .update();
     }
 
+    /** 按设备 ID 读取会话记录（含撤销状态），供令牌校验与撤销判定使用 */
     public Optional<DeviceSession> findById(String deviceId) {
         return jdbcClient.sql("""
                         SELECT id, user_id, refresh_token_hash, previous_refresh_token_hash,
@@ -140,6 +141,7 @@ public class DeviceRepository {
         return updated == 1;
     }
 
+    /** 撤销单个设备：清除刷新令牌并置撤销标记，重复撤销是幂等的 */
     public void revoke(String deviceId, String reason) {
         jdbcClient.sql("""
                         UPDATE devices
@@ -203,12 +205,14 @@ public class DeviceRepository {
                 .isPresent();
     }
 
+    /** 更新活跃时间，用于设备管理界面展示最近使用时间 */
     public void touch(String deviceId) {
         jdbcClient.sql("UPDATE devices SET last_active_at = now() WHERE id = :id")
                 .param("id", deviceId)
                 .update();
     }
 
+    /** 行映射：devices 表到会话视图 */
     private static DeviceSession mapSession(ResultSet rs, int rowNum) throws SQLException {
         return new DeviceSession(
                 rs.getString("id"),
@@ -232,6 +236,7 @@ public class DeviceRepository {
             Instant revokedAt,
             String revokedReason
     ) {
+        /** 是否已被撤销，供校验路径快速判定而不必逐字段判断 */
         public boolean revoked() {
             return revokedAt != null;
         }

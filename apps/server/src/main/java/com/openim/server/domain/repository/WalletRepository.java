@@ -35,6 +35,7 @@ public class WalletRepository {
         this.jdbcClient = jdbcClient;
     }
 
+    /** 用户的 CNY 账户 ID，转账入参使用；查不到说明账号创建时未建钱包 */
     public Optional<UUID> findAccountIdByUserId(UUID userId) {
         return jdbcClient.sql("""
                         SELECT id FROM wallet_accounts
@@ -173,6 +174,7 @@ public class WalletRepository {
                 .list();
     }
 
+    /** 写入一条借贷流水；balanceAfter 记录变动后余额，供对账与审计使用 */
     private void insertEntry(
             UUID transactionId,
             UUID accountId,
@@ -220,6 +222,7 @@ public class WalletRepository {
                 .single();
     }
 
+    /** 行映射：流水按 direction 转成带符号金额，业务类型名转成客户端契约的命名 */
     private static WalletEntry mapEntry(ResultSet rs, int rowNum) throws SQLException {
         long amount = rs.getLong("amount");
         boolean debit = "DEBIT".equals(rs.getString("direction"));

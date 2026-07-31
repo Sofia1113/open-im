@@ -49,10 +49,12 @@ public class JwtKeySet {
         this.productionProfile = productionProfile;
     }
 
+    /** 密钥集合的配置绑定入口，null 归一为空集合 */
     public void setKeys(Map<String, String> keys) {
         this.keys = keys == null ? new LinkedHashMap<>() : new LinkedHashMap<>(keys);
     }
 
+    /** 当前签发密钥 ID 的配置绑定入口 */
     public void setActiveKeyId(String activeKeyId) {
         this.activeKeyId = activeKeyId;
     }
@@ -91,10 +93,12 @@ public class JwtKeySet {
         }
     }
 
+    /** 当前用于签发的密钥 ID */
     public String activeKeyId() {
         return activeKeyId;
     }
 
+    /** 当前签发密钥的字节内容（UTF-8） */
     public byte[] activeSecret() {
         return keys.get(activeKeyId).getBytes(StandardCharsets.UTF_8);
     }
@@ -105,6 +109,7 @@ public class JwtKeySet {
                 .map(secret -> secret.getBytes(StandardCharsets.UTF_8));
     }
 
+    /** 已加载的密钥 ID 列表（含轮换期的旧密钥），供验证时按 kid 查找 */
     public List<String> keyIds() {
         return List.copyOf(keys.keySet());
     }

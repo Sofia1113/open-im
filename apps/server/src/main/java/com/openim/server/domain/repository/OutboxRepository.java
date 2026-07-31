@@ -5,6 +5,8 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -66,6 +68,7 @@ public class OutboxRepository {
                 .list();
     }
 
+    /** 标记事件已发布并计入投递次数，消费端据此不会再拾取 */
     public void markPublished(UUID id) {
         jdbcClient.sql("UPDATE outbox_events SET published_at = now(), attempts = attempts + 1 WHERE id = :id")
                 .param("id", id)
@@ -98,6 +101,35 @@ public class OutboxRepository {
                 .single();
     }
 
+    /**
+     * 删除已发布的旧事件。
+     *
+     * <b>为什么必需</b>：{@code outbox_events} 此前是一张只增不减的表。
+     * 每条消息、每次红包状态变化都往里写一行，而没有任何东西删过一行。
+     * 索引持续膨胀，{@code countPending()} 这个每次采集指标都要跑的查询
+     * 会越来越慢，最终备份体积里绝大部分是已经没有用的历史事件。
+     *
+     * 只删已发布的：未发布的事件还等着投递，删掉就是永久丢失。
+     *
+     * @param limit 单次删除上限。分批删除避免一次锁住大量行——
+     *              首次启用时表里可能已经积累了几百万行。
+     */
+    public int deletePublishedBefore(Instant cutoff, int limit) {
+        return jdbcClient.sql("""
+                        DELETE FROM outbox_events
+                         WHERE id IN (
+                             SELECT id FROM outbox_events
+                              WHERE published_at IS NOT NULL
+                                AND published_at < :cutoff
+                              LIMIT :limit
+                         )
+                        """)
+                .param("cutoff", Timestamp.from(cutoff))
+                .param("limit", limit)
+                .update();
+    }
+
+    /** 行映射：outbox_events 表到事件模型，payload 为 jsonb 需反序列化 */
     private static OutboxEvent mapEvent(ResultSet rs, int rowNum) throws SQLException {
         return new OutboxEvent(
                 UUID.fromString(rs.getString("id")),

@@ -1,0 +1,256 @@
+name: CD
+
+# 部署流水线：main 推送发布到 staging，打 tag 发布到 production。
+#
+# 与 CI 分开成独立 workflow 而不是加 job：CI 在 PR 上运行且只需 contents:read，
+# CD 需要 packages:write 和环境审批。放在一个文件里会让 PR 也带上写权限。
+#
+# 前置配置（仓库 Settings）：
+#   - Environments: staging、production。production 开启 required reviewers
+#   - production 环境变量 KUBE_CONFIG（base64 的 kubeconfig）
+#   - 镜像推送到 GHCR，用内置 GITHUB_TOKEN，无需额外 secret
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 部署目标环境
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  # 部署不可取消进行中的任务：中途取消会留下一半更新的副本集。
+  # 排队等待前一次部署完成。
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/server
+
+jobs:
+  build:
+    name: 构建并推送镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # 用于镜像签名
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 同时打 sha 和语义化标签：sha 保证每次部署都能精确回滚到某次提交，
+          # tag/branch 标签供人阅读。不使用 latest——它会让"当前部署的是哪个版本"
+          # 变成无法回答的问题。
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: 构建并推送
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/server
+          file: apps/server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 跨 workflow 复用构建缓存，避免每次全量编译
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: 部署前镜像扫描（阻断式）
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL
+          # 与 CI 的镜像扫描不同：这里 CRITICAL 阻断部署。
+          # CI 阶段不阻断是为了不卡住所有 PR，但把已知 CRITICAL 漏洞推到生产
+          # 是另一回事。HIGH 仍只上报，因为基础镜像的 HIGH 常需等上游发版。
+          exit-code: "1"
+          ignore-unfixed: true
+
+  deploy-staging:
+    name: 部署到 staging
+    # main 推送自动部署；tag 推送跳过 staging 直接走 production 审批
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging
+      url: https://staging.im.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 kubectl
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_STAGING }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: 应用清单并等待滚动完成
+        env:
+          # 经 env 传递而非直接插值进 run：镜像 digest 来自上游 job 输出，
+          # 虽然可信，但统一用 env 可以避免这类模式在复制到别处时变成注入点
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+        run: |
+          kubectl -n openim-staging apply -f deploy/k8s/deployment.yaml
+          # 按 digest 而非 tag 部署：tag 可以被重新指向，digest 不可变，
+          # 这保证"部署的就是刚刚扫描通过的那个镜像"
+          kubectl -n openim-staging set image deployment/openim-server "server=$IMAGE"
+          # 不加 --timeout 会在失败时挂到 job 超时才报错
+          kubectl -n openim-staging rollout status deployment/openim-server --timeout=5m
+
+      - name: 冒烟检查
+        run: |
+          # 只验证"服务起来了且依赖可达"。完整验收由 E2E 承担，
+          # 这里的目的是在 rollout 报告成功后再确认一次外部可访问性——
+          # readiness 探针通过不等于 Ingress 配置正确。
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 https://staging.im.example.com/actuator/health/readiness; then
+              echo "staging 就绪"; exit 0
+            fi
+            sleep 5
+          done
+          echo "冒烟检查失败：服务未在 150 秒内就绪"
+          exit 1
+
+      - name: 失败时回滚
+        if: failure()
+        run: |
+          kubectl -n openim-staging rollout undo deployment/openim-server
+          kubectl -n openim-staging rollout status deployment/openim-server --timeout=5m
+
+  deploy-production:
+    name: 部署到 production
+    # 只有 tag 推送或手动指定才部署生产，main 的每次合并不会自动上生产
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      # 该环境配置了 required reviewers，因此这一步会等待人工审批。
+      # 审批是有意的：自动部署到生产需要先有可靠的 E2E 和告警，两者都还没有。
+      name: production
+      url: https://im.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 kubectl
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: 记录当前版本供回滚参考
+        run: |
+          kubectl -n openim get deployment/openim-server \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | tee /tmp/previous-image
+          echo ""
+
+      - name: 部署前数据库备份
+        env:
+          DB_HOST: ${{ vars.DATABASE_HOST }}
+          DUMP_PATH: /tmp/pre-deploy-${{ github.run_id }}.dump
+        run: |
+          # 迁移不可逆（Flyway 无 down 脚本），因此部署前必须有一个可恢复点。
+          # 这不是替代常规备份，而是"这次部署出问题时能回到部署前"的保险。
+          #
+          # 在集群内的临时 Pod 里执行而不是从 runner 直连：数据库通常只对内网开放。
+          # 密码从集群已有的 openim-secrets 注入，不经过 GitHub secrets——
+          # 用 --env 传会把明文写进 Pod spec，备份期间任何有 pod 读权限的人都能看到。
+          kubectl -n openim run "pg-backup-$GITHUB_RUN_ID" \
+            --image=postgres:17-alpine --restart=Never --rm -i --quiet \
+            --overrides="$(cat <<JSON
+          {
+            "spec": {
+              "containers": [{
+                "name": "pg-backup",
+                "image": "postgres:17-alpine",
+                "command": ["pg_dump", "-h", "$DB_HOST", "-U", "openim", "-d", "openim", "-Fc"],
+                "env": [{
+                  "name": "PGPASSWORD",
+                  "valueFrom": {
+                    "secretKeyRef": {"name": "openim-secrets", "key": "database-password"}
+                  }
+                }]
+              }]
+            }
+          }
+          JSON
+          )" > "$DUMP_PATH"
+          # pg_dump 连到空库也会返回 0，因此校验产物非空
+          test -s "$DUMP_PATH" || { echo "备份为空，中止部署"; exit 1; }
+          ls -lh "$DUMP_PATH"
+
+      - name: 上传备份产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-deploy-backup-${{ github.run_id }}
+          path: /tmp/pre-deploy-${{ github.run_id }}.dump
+          retention-days: 30
+
+      - name: 应用清单并等待滚动完成
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+        run: |
+          kubectl -n openim apply -f deploy/k8s/deployment.yaml
+          kubectl -n openim set image deployment/openim-server "server=$IMAGE"
+          kubectl -n openim rollout status deployment/openim-server --timeout=10m
+
+      - name: 冒烟检查
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 https://im.example.com/actuator/health/readiness; then
+              echo "production 就绪"; exit 0
+            fi
+            sleep 5
+          done
+          echo "冒烟检查失败"
+          exit 1
+
+      - name: 失败时回滚
+        if: failure()
+        run: |
+          # 只回滚镜像，不回滚数据库：Flyway 迁移向前兼容，
+          # 旧版本镜像能在新 schema 上运行。若某次迁移破坏了这个前提，
+          # 必须走人工流程用上一步的备份恢复，而不是自动执行。
+          kubectl -n openim rollout undo deployment/openim-server
+          kubectl -n openim rollout status deployment/openim-server --timeout=10m
+          echo "已回滚镜像。若涉及不兼容的 schema 变更，需人工用 pre-deploy 备份恢复数据库。"

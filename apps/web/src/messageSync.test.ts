@@ -2,6 +2,7 @@ import type { Message } from "@open-im/contracts";
 import { describe, expect, it } from "vitest";
 import {
   collectMessagePages,
+  earliestMessageSeq,
   latestMessageSeq,
   mergeMessages,
 } from "./messageSync";
@@ -51,5 +52,18 @@ describe("message synchronization", () => {
         Array.from({ length: 100 }, () => message(100)),
       ),
     ).rejects.toThrow("消息同步游标没有前进");
+  });
+
+  /**
+   * 向前翻页的游标是已加载消息里最早的那个 seq。
+   *
+   * 空列表返回 0，调用方据此区分"还没加载过"（应取最新一页）与
+   * "已加载到 seq=N"（应取 N 之前的一页）。
+   */
+  it("uses the earliest loaded seq as the backwards cursor", () => {
+    expect(earliestMessageSeq([])).toBe(0);
+    expect(earliestMessageSeq([message(7), message(3), message(9)])).toBe(3);
+    // seq 从 1 开始，因此 1 是合法游标而不该被当成"空"
+    expect(earliestMessageSeq([message(1)])).toBe(1);
   });
 });

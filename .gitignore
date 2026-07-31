@@ -23,6 +23,7 @@ apps/server/data/
 .DS_Store
 .idea/
 *.iml
+.obsidian/
 .vscode/*
 !.vscode/extensions.json
 *.swp
@@ -31,3 +32,9 @@ apps/server/data/
 .playwright/
 playwright-report/
 test-results/
+
+# Playwright
+/playwright-report/
+/test-results/
+/blob-report/
+/playwright/.cache/

@@ -38,6 +38,13 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         this.metrics = metrics;
     }
 
+    /**
+     * 限流入口。
+     *
+     * CORS 预检请求直接放行（预检不携带业务意图，不应计入配额）；
+     * 没有对应策略的路径（健康检查等）同样放行。配额耗尽时记录拒绝指标、
+     * 写入 429 响应并返回 false 终止后续处理。
+     */
     @Override
     public boolean preHandle(
             HttpServletRequest request,
@@ -76,11 +83,35 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         String path = request.getRequestURI();
         String method = request.getMethod();
 
-        if (path.startsWith("/api/v1/auth/demo-login")) {
+        if (path.startsWith("/api/v1/auth/login")
+                || path.startsWith("/api/v1/auth/demo-login")) {
             return RateLimitPolicy.LOGIN;
+        }
+        if (path.startsWith("/api/v1/auth/register")) {
+            return RateLimitPolicy.REGISTER;
         }
         if (path.startsWith("/api/v1/auth/refresh")) {
             return RateLimitPolicy.TOKEN_REFRESH;
+        }
+        // 密码重置的两个环节配额不同：申请会触发发邮件（可被用来骚扰任意邮箱），
+        // 提交令牌只是一次哈希查找。必须放在 /password 的通用判断之前，
+        // 否则 password/reset 会先匹配到下面的 CHANGE_PASSWORD。
+        if (path.startsWith("/api/v1/auth/password/reset")) {
+            return RateLimitPolicy.PASSWORD_RESET_CONFIRM;
+        }
+        if (path.startsWith("/api/v1/auth/password/forgot")) {
+            return RateLimitPolicy.PASSWORD_RESET_REQUEST;
+        }
+        // 改密需要当前密码，因此它同样是一个密码尝试入口，必须单独限流。
+        // 已认证请求按 userId 计量，攻击者无法通过换 IP 绕过。
+        if (path.startsWith("/api/v1/sessions/password")) {
+            return RateLimitPolicy.CHANGE_PASSWORD;
+        }
+        // 注销同样要验证当前密码，是一个密码尝试入口；且它不可逆，
+        // 配额比改密更紧。复用 CHANGE_PASSWORD 会让两者共享配额——
+        // 那意味着有人反复尝试注销就能耗尽正常用户改密的配额。
+        if (path.startsWith("/api/v1/account")) {
+            return RateLimitPolicy.DELETE_ACCOUNT;
         }
         if (path.startsWith("/api/v1/red-packets")) {
             if ("POST".equals(method)) {
@@ -96,12 +127,38 @@ public class RateLimitInterceptor implements HandlerInterceptor {
                     ? RateLimitPolicy.CREATE_CALL
                     : RateLimitPolicy.DEFAULT_API;
         }
+        // 用户名查找单独限流：接口要求完整用户名，单次请求泄露不了什么，
+        // 但不限速的话可以用字典枚举出哪些用户名存在——那等于把已经移除的
+        // 全站用户列表还回去了。配额是可见性边界的一部分，不只是防滥用。
+        if (path.startsWith("/api/v1/users/search")) {
+            return RateLimitPolicy.USER_SEARCH;
+        }
+        if (path.startsWith("/api/v1/conversations")) {
+            // 创建单聊/群聊的配额单独且更紧：创建出来的会话没有删除接口，
+            // 被刷出来的垃圾会永久留在对端的列表里。
+            if ("/api/v1/conversations/direct".equals(path)
+                    || "/api/v1/conversations/group".equals(path)) {
+                return RateLimitPolicy.CREATE_CONVERSATION;
+            }
+            // 已读上报虽然是 POST，但它的调用频率与读操作同级——每看一批消息就
+            // 上报一次。按成员管理的配额（30/分钟）限它会在正常聊天中被误伤。
+            if (path.endsWith("/read")) {
+                return RateLimitPolicy.DEFAULT_API;
+            }
+            // 成员与资料的写操作。读操作（会话列表、消息历史、成员列表）
+            // 走默认配额——它们是每次打开界面都要调用的路径。
+            if ("POST".equals(method) || "DELETE".equals(method) || "PATCH".equals(method)) {
+                return RateLimitPolicy.CONVERSATION_ADMIN;
+            }
+            return RateLimitPolicy.DEFAULT_API;
+        }
         if (path.startsWith("/api/v1/")) {
             return RateLimitPolicy.DEFAULT_API;
         }
         return null;
     }
 
+    /** 已认证请求按 userId 计量（避免同一出口 IP 下的多个用户相互影响），未认证请求按客户端 IP 计量 */
     private String identifierFor(HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
         if (auth != null) {
@@ -123,6 +180,12 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         return remoteAddr == null ? "unknown" : remoteAddr;
     }
 
+    /**
+     * 写入 429 响应。
+     *
+     * 固定 JSON 错误体（含请求 ID 便于排障），并带 Retry-After 头告知客户端
+     * 何时可以重试。写响应本身失败时退化为只设置状态码，保证请求一定被拒绝。
+     */
     private void writeTooManyRequests(
             HttpServletRequest request,
             HttpServletResponse response,

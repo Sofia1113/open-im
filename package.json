@@ -12,10 +12,15 @@
     "typecheck": "pnpm --filter @open-im/contracts build && mvn -q -f apps/server/pom.xml -DskipTests compile && pnpm --filter @open-im/web typecheck",
     "test": "mvn -q -f apps/server/pom.xml verify && pnpm --filter @open-im/contracts test && pnpm --filter @open-im/web test",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "e2e": "docker compose --profile e2e up -d --wait && playwright test",
+    "e2e:ui": "docker compose --profile e2e up -d --wait && playwright test --ui",
+    "e2e:install": "playwright install --with-deps chromium",
+    "e2e:down": "docker compose --profile e2e down -v"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.0",
     "concurrently": "^9.2.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^5.2.0",

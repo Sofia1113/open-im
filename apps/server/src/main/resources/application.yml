@@ -29,7 +29,7 @@ spring:
   data:
     redis:
       url: ${REDIS_URL:redis://127.0.0.1:6379}
-      # Lettuce 连接池：长连接复用，避免每次 Pub/Sub 发布都新建连接
+      # Lettuce 连接池：长连接复用，避免每次事件发布都新建连接
       lettuce:
         pool:
           max-active: 16
@@ -49,23 +49,126 @@ management:
       show-details: when-authorized
       group:
         readiness:
-          # Redis 不可用时同样不应接受流量：在线状态和跨实例扇出都依赖它
-          include: readinessState,db,redis
+          # 只含数据库。Redis **刻意不在**这里——它是所有实例共用的单点，
+          # 放进就绪组会让它的故障同时摘掉每一个 Pod 的流量，把"部分功能降级"
+          # 放大成"整站 503"，同时使限流降级、去重放行、presence 兜底这些
+          # 容错分支永远不可达（它们只在"Redis 挂了但服务仍在处理请求"时执行）。
+          # Redis 状态改由 openim_redis_available 指标暴露，交给告警处置。
+          # 详见 observability/RedisAvailability 的类注释。
+          include: readinessState,db
   metrics:
     tags:
       application: ${spring.application.name}
+
+    distribution:
+      # ── 必须显式启用 histogram bucket ──────────────────────
+      #
+      # Spring Boot 默认把 http_server_requests_seconds 发布为 **summary**
+      # （只有 count / sum / max），**不含任何 bucket**。
+      # 而 `histogram_quantile()` 需要 `http_server_requests_seconds_bucket`。
+      #
+      # 没有这一项时，以下全部是死的且不报任何错：
+      #   * SLO 里的延迟目标（p99 < 500ms）
+      #   * Grafana 的延迟分位数面板与"最慢的接口"面板
+      #   * OpenIMHighLatency 告警
+      #   * openim:request_latency_p99_5m / p50_5m 记录规则
+      #
+      # 它们的表达式语法完全正确、promtool 校验通过、Prometheus 加载无错——
+      # 只是永远返回空。这是用真实 Prometheus 校验规则时才发现的
+      # （见 deploy/observability/verify-rules.sh）。
+      percentiles-histogram:
+        http.server.requests: true
+
+      # SLO 边界。Micrometer 会为这些值额外生成精确的 bucket，
+      # 使 p99 在关心的区间上更准——默认 bucket 是对数分布的，
+      # 500ms 附近的精度不足以支撑一个 500ms 的 SLO。
+      slo:
+        http.server.requests: 100ms,200ms,500ms,1s,2s,5s
+
+      # bucket 上下界。超出范围的观测仍然计入 count，
+      # 但不会为它们生成额外 bucket——这控制了指标基数。
+      minimum-expected-value:
+        http.server.requests: 5ms
+      maximum-expected-value:
+        http.server.requests: 10s
   observations:
     key-values:
       application: ${spring.application.name}
   tracing:
     sampling:
-      # 全量采样。未配置 OTLP endpoint 时 span 不会导出，
-      # 但 traceId/spanId 会进入日志，使一次请求的多条日志可以串起来。
-      probability: 1.0
+      # 本地全量采样，便于调试。生产覆盖为按比例采样——
+      # 全量导出在高 QPS 下的成本主要不在应用侧，而在 collector 与存储。
+      probability: ${TRACING_SAMPLE_RATE:1.0}
+
+  # ── OTLP span 导出 ────────────────────────────────────────
+  #
+  # **刻意不在这里配置 endpoint。**
+  #
+  # Spring Boot 只要看到 management.otlp.tracing.endpoint 这个 key 存在
+  # 就会装配 OtlpHttpSpanExporter，而空字符串会让它在构造时抛
+  # "Invalid endpoint, must start with http:// or https://" —— 整个应用启动失败。
+  # 写成 `endpoint: ${OTLP_TRACES_ENDPOINT:}` 看起来像"没配就不导出"，
+  # 实际是"没配就起不来"。
+  #
+  # 启用方式是注入环境变量，Spring 的宽松绑定会识别它：
+  #   MANAGEMENT_OTLP_TRACING_ENDPOINT=http://otel-collector:4318/v1/traces
+  #
+  # 不注入时属性不存在，导出器不装配，traceId/spanId 仍然生成并进入日志
+  # （一次请求的多条日志可以串起来），只是看不到跨服务的调用链。
+  otlp:
+    tracing:
+      # 超时可以安全地预设——它不触发导出器的装配。
+      # 超时的批次会被丢弃而不是重试：追踪数据的价值随时间衰减，
+      # 为了导出旧 span 而堆积内存不划算。
+      timeout: 10s
 
 openim:
   demo-login-enabled: ${DEMO_LOGIN_ENABLED:true}
   client-origin: ${CLIENT_ORIGIN:http://localhost:5173}
+
+  conversation:
+    # ── 群成员上限 ──────────────────────────────────────────
+    # 约束的是**扇出成本**而非存储：一条群消息要投递给每个在线成员，
+    # 成员数直接决定单条消息的放大倍数。500 是当前架构（成员缓存 +
+    # 每实例独立消费组）下不需要额外分片就能支撑的量级。
+    #
+    # **调大它不会让系统支持更大的群**，只会让扇出成本超出压测过的范围。
+    # 万人群需要读扩散改写扩散、成员列表分页、消息按需拉取，是另一个量级的设计。
+    # 可配置的目的是让部署方按自己压测出的容量收紧，以及让测试能压到很小的值。
+    max-group-members: ${MAX_GROUP_MEMBERS:500}
+
+  auth:
+    registration-enabled: ${REGISTRATION_ENABLED:true}
+    # BCrypt cost。12 约合 200-400ms/次，是 OWASP 建议区间内偏保守的取值。
+    # 每 +1 计算量翻倍：调高会同时放大正常登录延迟和被恶意请求消耗的 CPU。
+    bcrypt-cost: ${BCRYPT_COST:12}
+    # 连续失败次数达到此值后锁定账号。计数存数据库而非 Redis：
+    # 账号锁定不能建立在会降级放行的存储之上。
+    max-failed-attempts: ${MAX_FAILED_ATTEMPTS:5}
+    lock-duration-seconds: ${ACCOUNT_LOCK_SECONDS:900}
+
+    # 设备会话有效性缓存。缓存把"撤销立即生效"放宽为"撤销在此 TTL 内生效"，
+    # 换取消除每请求一次数据库往返。撤销时有主动失效广播，
+    # 因此这个 TTL 只是 Redis 故障时的最坏上限。
+    session-cache-ttl-seconds: ${SESSION_CACHE_TTL:30}
+    session-cache-max-size: 50000
+
+    # ── 密码重置 ────────────────────────────────────────────
+    # 关闭时两个端点返回 501。生产环境若没有配置真实的
+    # PasswordResetNotifier 实现，必须显式关闭——否则启动会失败，
+    # 因为兜底实现会把一次性令牌写进日志。见 LoggingPasswordResetNotifier。
+    password-reset-enabled: ${PASSWORD_RESET_ENABLED:true}
+    # 30 分钟。够用户从收件箱找到邮件，又短到令牌泄漏的窗口有限。
+    password-reset-ttl-seconds: ${PASSWORD_RESET_TTL:1800}
+    # 已使用/已过期的令牌保留多久后清理。保留一段时间用于排查
+    # "这个账号是谁重置的"，但它是一张只增不减的表，必须有清理。
+    password-reset-retention-days: ${PASSWORD_RESET_RETENTION_DAYS:7}
+
+  audit:
+    # 审计日志中 IP 哈希的盐值。未配置时从 JWT 签名密钥派生。
+    # **无盐的 IP 哈希毫无意义**——IPv4 只有 2^32 个值，可以完全枚举反查。
+    # 单独配置的好处是轮换签名密钥时历史审计记录的 IP 哈希仍可比对。
+    ip-hash-salt: ${AUDIT_IP_HASH_SALT:}
 
   jwt:
     issuer: open-im
@@ -91,8 +194,67 @@ openim:
     # presence TTL 应为心跳间隔的 3-4 倍，保证偶发延迟不会误报离线
     presence-ttl-seconds: 120
 
-  # 每个实例唯一标识，用于 Pub/Sub 跳过自身消息；K8s 部署可注入 Pod 名称
+    # 单实例连接数上限。超出后新连接被以 1013 SERVICE_OVERLOAD 拒绝，
+    # 客户端按既有退避逻辑重连、负载均衡器可把它导向其他实例。
+    # 这是防止内存失控的闸门（无上限时结果是 OOMKill 而非优雅拒绝），
+    # 不是容量规划——真实容量需要压测得出。
+    max-connections: ${REALTIME_MAX_CONNECTIONS:10000}
+
+    # ── 跨实例事件流（Redis Streams）─────────────────────────────
+    # 取代原先的 Pub/Sub。Pub/Sub 无持久化无确认，投递语义实际是 at-most-once；
+    # Streams 的消费组 + XACK + XAUTOCLAIM 才能提供 at-least-once。
+    #
+    # 流的最大长度。近似修剪，实际长度会略高于此值。
+    # 按 100000 条、单条约 1KB 估算，内存占用约 100MB。
+    stream-max-length: 100000
+    stream-trim-interval-millis: 60000
+    # 单次 XREADGROUP 的批量与阻塞时长
+    stream-batch-size: 64
+    # 必须**小于** openim.redis.command-timeout-millis：XREADGROUP 阻塞超过命令超时
+    # 会抛 QueryTimeoutException，每轮消费都失败、跨实例投递完全不工作。
+    # 启动时会校验这个关系（见 RealtimeEventStreamConsumer）。
+    stream-block-millis: 500
+    # 未确认记录闲置多久后可被重新认领。需远大于正常处理耗时，
+    # 否则会与仍在处理中的记录竞争
+    stream-reclaim-idle-millis: 30000
+    stream-reclaim-interval-millis: 30000
+    stream-error-backoff-millis: 1000
+    # 消费组闲置多久后判定为已下线实例并销毁。Pod 名带随机后缀，
+    # 每次重建都是一个新消费组，不清理会随发版累积
+    stream-idle-group-timeout-millis: 3600000
+    stream-group-cleanup-interval-millis: 600000
+
+    # 事件去重（进程内，不依赖 Redis）。TTL 需覆盖主路径推送到
+    # Outbox 补偿扫描的最大间隔：Worker 每 5 秒一轮，退避上限 5 分钟
+    event-dedup-ttl-seconds: 600
+    event-dedup-max-size: 200000
+
+    # 会话成员缓存：消息扇出与鉴权共用的热路径
+    member-cache-ttl-seconds: 60
+    member-cache-max-size: 20000
+
+  # 每个实例唯一标识，用于跳过自身发出的事件；K8s 部署可注入 Pod 名称
   instance-id: ${INSTANCE_ID:}
+
+  redis:
+    # ── 超时（决定降级是"快速失败"还是"慢慢挂死"）────────────
+    #
+    # Lettuce 的默认命令超时是 60 秒，且断连期间命令排队等重连。
+    # 那意味着 Redis 挂掉后每个碰到 Redis 的请求阻塞 60 秒才走降级分支——
+    # 功能上等同于不可用，而且线程被长期占住，比直接失败更糟。
+    # 这是故障注入测试实测发现的（load-test/chaos-degradation.sh）。
+    #
+    # 本项目对 Redis 的操作全是 GET/SET/XADD 这类简单命令，正常在毫秒级。
+    # 1 秒是极宽松的上限——超过它必然是故障而非慢。
+    # **阻塞读的约束**：openim.realtime.stream-block-millis 必须小于这个值。
+    # 第一版配置里用了 TimeoutOptions.fixedTimeout，它会覆盖 Lettuce 对阻塞命令的
+    # 超时推导，导致 XREADGROUP BLOCK 2000 在 1 秒时超时、跨实例投递完全不工作——
+    # 而单实例下毫无症状。启动时会校验这个关系。
+    command-timeout-millis: ${REDIS_COMMAND_TIMEOUT:1000}
+    connect-timeout-millis: ${REDIS_CONNECT_TIMEOUT:2000}
+    # 可用性探测间隔。探测结果通过 openim_redis_available 指标暴露，
+    # 就绪探针刻意不包含 Redis（见 management.endpoint.health.group）
+    health-probe-interval-millis: ${REDIS_HEALTH_PROBE_INTERVAL:10000}
 
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
@@ -103,6 +265,49 @@ openim:
     red-packet-expiry-interval: ${WORKER_RED_PACKET_EXPIRY_INTERVAL:30000}
     call-expiry-interval: ${WORKER_CALL_EXPIRY_INTERVAL:15000}
     outbox-publish-interval: ${WORKER_OUTBOX_INTERVAL:5000}
+
+  # ── 数据保留期 ──────────────────────────────────────────────
+  # outbox_events / audit_logs / password_reset_tokens 此前都是只增不减的表。
+  # 没有清理的后果是渐进的、不触发任何告警的劣化：索引膨胀、指标查询变慢、
+  # 备份体积里绝大部分是无用的历史数据。这类问题在演示环境永远不会显现。
+  retention:
+    # 已发布的 outbox 事件。补偿窗口最长 5 分钟，7 天纯粹留给排查。
+    # 未发布的事件不会被删——它们还等着投递。
+    outbox-days: ${RETENTION_OUTBOX_DAYS:7}
+    # 审计日志。这个值应由合规要求决定，不是由存储成本决定。
+    # wallet.* 与 red_packet.* 开头的动作不参与清理（账务追溯期更长）。
+    audit-days: ${RETENTION_AUDIT_DAYS:180}
+    # 每轮每张表的删除上限。分批避免长事务锁住大量行——
+    # 首次启用时表里可能已积累几百万行，一次 DELETE 会影响线上请求。
+    batch-size: ${RETENTION_BATCH_SIZE:5000}
+    interval-millis: ${RETENTION_INTERVAL:3600000}
+    initial-delay-millis: 300000
+
+    # ── audit_logs 分区维护 ────────────────────────────────
+    # audit_logs 按月分区（见 V7 迁移）。按分区删除是一次元数据操作，
+    # 而等价的 DELETE 要逐行标记、写满 WAL、再等 VACUUM 回收。
+    #
+    # 保留月数。这个值应由合规要求决定。
+    audit-months: ${RETENTION_AUDIT_MONTHS:6}
+    # **默认关闭**：删除审计数据不可逆，且保留期通常由合规而非存储成本决定，
+    # 不该由一个默认开启的定时任务执行。部署方确认保留期后显式打开。
+    audit-drop-partitions: ${RETENTION_AUDIT_DROP_PARTITIONS:false}
+    audit-partition-interval-millis: 86400000
+    audit-partition-initial-delay-millis: 60000
+
+springdoc:
+  api-docs:
+    # 规范以 JSON 暴露在 /v3/api-docs。生产环境覆盖为 false——
+    # 规范文件由 CI 在构建时导出成产物，不需要线上端点参与。
+    enabled: true
+    path: /v3/api-docs
+  # 不引入 Swagger UI（依赖用的是 -api 而非 -ui），这里显式关闭以免
+  # 将来误加 -ui 依赖时它自动生效
+  swagger-ui:
+    enabled: false
+  # 按路径分组时保持字母序，使导出的规范在 diff 中稳定——
+  # 顺序不稳定的话每次生成都产生噪音变更，契约回归检查就失去意义
+  writer-with-order-by-keys: true
 
 logging:
   pattern:

@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 基于 Redis 的分布式限流器（固定窗口计数器）
@@ -18,8 +19,12 @@ import java.util.List;
  * 其中 {@code windowIndex = epochSeconds / windowPeriodSeconds}，
  * 确保同一时间窗口内的所有请求都命中同一个 key。
  *
- * <b>降级策略：</b>Redis 不可用时记录警告并放行请求，而不是直接拒绝——
- * 限流服务不应成为业务的单点故障。
+ * <b>故障语义</b>：本类不自行决定 Redis 故障时放行还是拒绝——它返回
+ * {@link Optional#empty()} 表示"无法给出判定"，由 {@link RateLimiter}
+ * 按策略的 {@link RateLimitPolicy.FailureMode} 决定。
+ *
+ * 这个分工是必要的：此前本类在异常时直接返回"放行"，导致登录接口在 Redis
+ * 抖动期间完全失去限流保护，而调用方无从得知判定是真实的还是降级的。
  */
 @Component
 public class RedisRateLimiter {
@@ -47,6 +52,7 @@ public class RedisRateLimiter {
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<List<Long>> script;
 
+    @SuppressWarnings("unchecked")
     public RedisRateLimiter(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
         DefaultRedisScript<List<Long>> s = new DefaultRedisScript<>();
@@ -60,9 +66,9 @@ public class RedisRateLimiter {
      *
      * @param policy     限流策略（容量和时间窗口）
      * @param identifier 限流主体（如 "user:alice"、"ip:1.2.3.4"）
-     * @return 决策结果
+     * @return 判定结果；{@link Optional#empty()} 表示 Redis 不可用，无法判定
      */
-    public RateLimiter.Decision tryConsume(RateLimitPolicy policy, String identifier) {
+    public Optional<RateLimiter.Decision> tryConsume(RateLimitPolicy policy, String identifier) {
         long windowSecs = policy.period().toSeconds();
         // windowIndex 使同一时间窗口内的所有请求落到同一个 key
         long windowIndex = System.currentTimeMillis() / 1000 / windowSecs;
@@ -76,17 +82,20 @@ public class RedisRateLimiter {
                     String.valueOf(windowSecs)
             );
             if (result == null || result.isEmpty()) {
-                return RateLimiter.Decision.allow();
+                // 脚本返回了意料之外的结果：与连接失败同等对待，交由调用方按策略决定
+                log.warn("Redis rate limit script returned no result policy={}", policy.name());
+                return Optional.empty();
             }
             long allowed = result.get(0);
             long retryAfterSecs = result.size() > 1 ? result.get(1) : windowSecs;
-            return allowed == 1
+            return Optional.of(allowed == 1
                     ? RateLimiter.Decision.allow()
-                    : RateLimiter.Decision.reject(Duration.ofSeconds(Math.max(1, retryAfterSecs)));
+                    : RateLimiter.Decision.reject(Duration.ofSeconds(Math.max(1, retryAfterSecs))));
         } catch (RuntimeException exception) {
-            // Redis 不可用时放行，不让限流服务成为单点故障
-            log.warn("Redis rate limiter unavailable for key={}, allowing request", key);
-            return RateLimiter.Decision.allow();
+            // 不记录 identifier：它含用户 ID 或 IP（见 SECURITY.md §9 对日志的要求）
+            log.warn("Redis rate limiter unavailable policy={} reason={}",
+                    policy.name(), exception.getClass().getSimpleName());
+            return Optional.empty();
         }
     }
 }

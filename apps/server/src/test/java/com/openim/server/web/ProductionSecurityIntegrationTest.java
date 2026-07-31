@@ -23,7 +23,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "openim.client-origin=https://im.example.test",
         // 与其他集成测试共用同一个容器，迁移集合必须一致，
         // 否则 Flyway 会因为"已应用但本地未解析"的 seed 迁移拒绝启动
-        "spring.flyway.locations=classpath:db/migration,classpath:db/seed"
+        "spring.flyway.locations=classpath:db/migration,classpath:db/seed",
+        // prod profile 下必须显式关闭密码重置，否则应用<b>拒绝启动</b>——
+        // 兜底的 LoggingPasswordResetNotifier 会把一次性令牌写进日志。
+        // 这不是测试的特殊处理，而是真实 prod 部署面临的同一个选择：
+        // 要么接入真实送达渠道，要么明确关掉这个功能。
+        // 该闸门本身由 ProductionPasswordResetGuardTest 验证。
+        "openim.auth.password-reset-enabled=false"
 })
 @AutoConfigureMockMvc
 @ActiveProfiles("prod")

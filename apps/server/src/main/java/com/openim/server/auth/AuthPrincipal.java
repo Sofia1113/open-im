@@ -12,6 +12,7 @@ import java.util.UUID;
 public record AuthPrincipal(String userId, String deviceId) {
     public static final String ATTRIBUTE = "openim.auth";
 
+    /** 从请求属性中取出认证主体；未通过鉴权的请求返回 null */
     public static AuthPrincipal from(HttpServletRequest request) {
         return (AuthPrincipal) request.getAttribute(ATTRIBUTE);
     }

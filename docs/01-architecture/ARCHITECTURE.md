@@ -15,10 +15,10 @@
 | Web 客户端 | React + TypeScript + Vite | PWA / Electron 复用 Web 核心 | 开发反馈快、WebRTC 支持成熟 |
 | 状态管理 | React Context + hooks | Zustand/Query（复杂后引入） | 首版依赖少、状态边界清楚 |
 | 服务端 | Java 21 + Spring Boot 3.5 | 按领域拆服务或保持模块化单体 | 企业级事务、验证、监控与长期治理成熟 |
-| 实时层 | Spring 原生 WebSocket + JSON Envelope | Redis Pub/Sub / MQ 跨实例扇出 | 协议简单、无专有 Socket 客户端依赖 |
+| 实时层 | Spring 原生 WebSocket + JSON Envelope | **Redis Streams** 消费组跨实例扇出 | 协议简单、无专有 Socket 客户端依赖 |
 | 契约 | Java Records + Bean Validation + TypeScript 类型 | OpenAPI/AsyncAPI 生成 SDK | 两端保持 JSON 字段和事件语义一致 |
 | 持久化 | MVP 内存仓储 | PostgreSQL | 事务、一致性与审计能力成熟 |
-| 缓存/协调 | 单进程状态 | Redis Cluster | 在线状态、限流、Pub/Sub、分布式锁 |
+| 缓存/协调 | 单进程状态 | Redis Cluster | 在线状态、限流、事件流、缓存失效广播 |
 | 媒体 | 浏览器 WebRTC Mesh | LiveKit/mediasoup SFU + TURN | 小房间简单，规模增长后可替换 |
 | 文件 | 本地/占位 URL | S3 兼容对象存储 + CDN | 业务库不存大对象 |
 | 任务 | 进程内定时器 | 持久化 Outbox + 队列 Worker | 处理退款、通知和补偿 |
@@ -139,7 +139,16 @@ Web 客户端依赖 `packages/contracts`；Spring Boot 通过 Java Records 和 B
 
 ### 6.2 可靠事件
 
-生产环境将领域变更和 Outbox 事件写入同一事务。Worker 锁定未发布事件，发送到 WebSocket Pub/Sub 或任务队列后记录尝试和完成时间。消费者用事件 ID 幂等处理，因此允许至少一次投递。
+领域变更和 Outbox 事件写入同一事务。Worker 用 `FOR UPDATE SKIP LOCKED` 锁定未发布事件，
+写入 **Redis Streams** 后标记完成。每个实例以自己的 instanceId 作为消费组读取
+（广播语义，而非消费组默认的竞争消费），处理完成才 `XACK`；未确认的记录由
+`XAUTOCLAIM` 在闲置超时后重投。各实例按事件的稳定业务标识在**进程内**去重。
+
+> **为什么不是 Pub/Sub**：Pub/Sub 的 `convertAndSend` 返回只代表"已发给当前订阅者"，
+> 不代表任何人收到——没有持久化、没有确认、没有重放。据此标记 Outbox 已发布，
+> 等于把 at-most-once 当成了 at-least-once：任一实例的订阅器在重连窗口内
+> 就永久错过该事件。`XADD` 成功意味着事件已落到 Redis 的数据结构里，
+> 此时"写入成功即标记发布"才成立。
 
 ## 7. 实时连接协议
 
@@ -161,7 +170,9 @@ Web 客户端依赖 `packages/contracts`；Spring Boot 通过 Java Records 和 B
 ### 8.2 生产建议
 
 - CDN 托管静态客户端；API 网关终止 TLS。
-- 无状态 API/WebSocket 节点水平扩展，Redis Pub/Sub 或消息队列负责跨节点广播。
+- 无状态 API 节点水平扩展；WebSocket 节点的**连接注册表在 JVM 内存**，
+  因此需要负载均衡层为 `/ws` 配置会话亲和（HTTP 请求无需粘性）。
+  跨节点广播由 Redis Streams 消费组负责。
 - PostgreSQL 主从/高可用，Redis Cluster，S3 兼容存储。
 - 独立 Worker 处理 Outbox、红包过期与离线通知。
 - 独立 SFU 与 TURN 集群；API 服务只下发令牌和业务状态。

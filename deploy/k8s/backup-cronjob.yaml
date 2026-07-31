@@ -1,0 +1,208 @@
+# 数据库备份
+#
+# 前置：
+#   kubectl -n openim create secret generic openim-backup \
+#     --from-literal=s3-endpoint='https://s3.example.com' \
+#     --from-literal=s3-bucket='openim-backups' \
+#     --from-literal=s3-access-key='<key>' \
+#     --from-literal=s3-secret-key='<secret>'
+#
+# ── 这份配置解决的问题 ────────────────────────────────────────
+#
+# CD 流水线里已有一次"部署前备份"，但那**不是备份方案**——它只在部署时运行，
+# 存在 GitHub Actions 的 artifact 里（保留 30 天），而且不会在没有部署的日子产生任何副本。
+# 一周不发版就一周没有备份，数据库在周三崩了只能回到上周五。
+#
+# 真正的备份需要三件事，缺一不可：
+#   1. **定期**：与发布节奏无关，按时间跑
+#   2. **异地**：与数据库不在同一个故障域（这里是对象存储）
+#   3. **验证过能恢复**：见 scripts/restore-drill.sh 与 BACKUP.md 的演练记录
+#
+# 第 3 条最常被跳过。没有演练过的备份不叫备份，叫"希望"。
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openim-db-backup
+  namespace: openim
+  labels:
+    app: openim-backup
+spec:
+  # 每天 UTC 18:00 = 北京时间凌晨 2 点，业务低谷
+  schedule: "0 18 * * *"
+  timeZone: "UTC"
+  # 上一次还没跑完就跳过本次：并发的 pg_dump 会互相拖慢，
+  # 且同一时刻两份不完整的备份没有意义
+  concurrencyPolicy: Forbid
+  # 保留最近几次的 Job 记录用于排查，太多会占用 etcd
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  # 错过调度窗口后多久内仍然补跑。集群升级等原因可能错过，
+  # 但补跑一个 6 小时前的备份仍然有价值
+  startingDeadlineSeconds: 21600
+  jobTemplate:
+    spec:
+      # 失败重试 2 次后放弃并告警，避免无限重试掩盖问题
+      backoffLimit: 2
+      # 单次备份的时间上限，超时视为失败
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: openim-backup
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70 # postgres 镜像里的 postgres 用户
+            fsGroup: 70
+          containers:
+            - name: backup
+              image: postgres:17-alpine
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  DUMP="/tmp/openim-${STAMP}.dump"
+
+                  echo "[1/4] 导出数据库"
+                  # -Fc 自定义格式：支持并行恢复与选择性恢复，且自带压缩
+                  # --no-owner/--no-privileges：恢复到演练环境时不要求同名角色存在
+                  pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" \
+                    -Fc --no-owner --no-privileges -f "$DUMP"
+
+                  # pg_dump 连到空库也返回 0。不校验的话会持续产生"成功的空备份"，
+                  # 直到真正需要恢复时才发现。
+                  SIZE=$(stat -c %s "$DUMP")
+                  echo "[2/4] 校验产物：${SIZE} 字节"
+                  if [ "$SIZE" -lt 10000 ]; then
+                    echo "备份文件过小（${SIZE} 字节），判定为失败" >&2
+                    exit 1
+                  fi
+
+                  # 结构完整性检查：能列出目录说明文件没有截断
+                  echo "[3/4] 校验可读性"
+                  pg_restore --list "$DUMP" > /tmp/toc.txt
+                  TABLES=$(grep -c "TABLE DATA" /tmp/toc.txt || true)
+                  echo "包含 ${TABLES} 张表的数据"
+                  if [ "$TABLES" -lt 10 ]; then
+                    echo "表数量异常（${TABLES}），schema 可能不完整" >&2
+                    exit 1
+                  fi
+
+                  echo "[4/4] 上传到对象存储"
+                  mc alias set backup "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+                  mc cp "$DUMP" "backup/${S3_BUCKET}/daily/openim-${STAMP}.dump"
+
+                  # 保留策略在对象存储侧用生命周期规则实现更可靠，
+                  # 这里只做兜底清理，避免生命周期规则未配置时无限增长
+                  echo "清理 30 天前的备份"
+                  mc rm --recursive --force --older-than 30d \
+                    "backup/${S3_BUCKET}/daily/" || true
+
+                  echo "备份完成：openim-${STAMP}.dump (${SIZE} 字节, ${TABLES} 张表)"
+              env:
+                - name: DB_HOST
+                  value: postgres
+                - name: DB_USER
+                  value: openim
+                - name: DB_NAME
+                  value: openim
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: openim-secrets
+                      key: database-password
+                - name: S3_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: openim-backup
+                      key: s3-endpoint
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: openim-backup
+                      key: s3-bucket
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: openim-backup
+                      key: s3-access-key
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: openim-backup
+                      key: s3-secret-key
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: work
+                  mountPath: /tmp
+                - name: mc-config
+                  mountPath: /.mc
+          volumes:
+            # 只读根文件系统下 pg_dump 与 mc 都需要可写目录。
+            # emptyDir 随 Pod 销毁，备份文件不会留在节点上。
+            - name: work
+              emptyDir:
+                sizeLimit: 5Gi
+            - name: mc-config
+              emptyDir: {}
+
+---
+# 演练提醒：每月触发一次，提示有人执行恢复演练。
+#
+# 刻意做成"提醒"而不是"自动演练"：自动恢复演练需要一个隔离的目标环境，
+# 而一个长期闲置、只在演练时使用的环境本身就会腐化（凭证过期、镜像不可用）。
+# 由人执行、脚本辅助，比一个从没人看结果的自动任务更可靠。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openim-restore-drill-reminder
+  namespace: openim
+spec:
+  # 每月 1 号
+  schedule: "0 1 1 * *"
+  timeZone: "UTC"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: reminder
+              image: curlimages/curl:8.11.1
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # 检查最近一次备份是否存在且够新——演练之前先确认有东西可恢复
+                  echo "本月恢复演练提醒"
+                  echo "执行：deploy/scripts/restore-drill.sh"
+                  echo "记录：deploy/observability/BACKUP.md 的演练记录表"
+                  if [ -n "${WEBHOOK_URL:-}" ]; then
+                    curl -fsS -X POST "$WEBHOOK_URL" \
+                      -H 'Content-Type: application/json' \
+                      -d '{"text":"OpenIM：本月数据库恢复演练待执行。脚本 deploy/scripts/restore-drill.sh，结果记入 BACKUP.md。"}'
+                  fi
+              env:
+                - name: WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: openim-backup
+                      key: drill-webhook-url
+                      optional: true

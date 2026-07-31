@@ -32,6 +32,7 @@ public class MessageRepository {
         this.jdbcClient = jdbcClient;
     }
 
+    /** 写入一条消息并返回领域模型。客户端重试时由数据库唯一约束去重，此处不负责幂等判断 */
     public ImMessage insert(
             UUID id,
             UUID conversationId,
@@ -84,6 +85,7 @@ public class MessageRepository {
                 .optional();
     }
 
+    /** 按消息 ID 读取，用于消息详情等场景 */
     public Optional<ImMessage> findById(UUID id) {
         return jdbcClient.sql(SELECT_MESSAGE + " WHERE id = :id")
                 .param("id", id)
@@ -91,7 +93,12 @@ public class MessageRepository {
                 .optional();
     }
 
-    /** 按会话序号增量拉取，用于历史加载和断线补拉 */
+    /**
+     * 按会话序号向<b>后</b>拉取，用于断线补拉。
+     *
+     * 这是"我离线期间漏了什么"的语义：从已知位置往新的方向取。
+     * 打开会话时不该用它——那会从最早的消息开始读，见 {@link #listLatest}。
+     */
     public List<ImMessage> listAfterSeq(UUID conversationId, long afterSeq, int limit) {
         return jdbcClient.sql(SELECT_MESSAGE + """
                          WHERE conversation_id = :conversationId
@@ -107,6 +114,75 @@ public class MessageRepository {
                 .list();
     }
 
+    /**
+     * 会话最新的一页消息，用于<b>打开会话</b>。
+     *
+     * 此前打开会话走的是 {@code listAfterSeq(0)} 然后翻页翻到底——也就是把
+     * <b>整个会话的全部历史</b>拉进内存。一个累积了五万条消息的会话，点开它就是
+     * 500 次串行 HTTP 请求。这不只是"看不到更早的消息"，而是打开会话本身会越来越慢，
+     * 且劣化程度与会话活跃度成正比。演示数据里每个会话两条消息，永远看不出来。
+     *
+     * {@code ORDER BY seq DESC} 命中 {@code idx_messages_conversation_seq}
+     * （建索引时就是 {@code (conversation_id, seq DESC)}），因此取最新一页是
+     * 一次索引前缀扫描，与会话总长度无关。
+     *
+     * 返回<b>升序</b>：调用方要的是可直接渲染的顺序，让每个调用方各自反转
+     * 是在重复同一件事，而漏了反转的地方会静默地把消息倒着显示。
+     */
+    public List<ImMessage> listLatest(UUID conversationId, long afterSeqExclusive, int limit) {
+        List<ImMessage> descending = jdbcClient.sql(SELECT_MESSAGE + """
+                         WHERE conversation_id = :conversationId
+                           AND seq > :afterSeqExclusive
+                           AND status = 'ACTIVE'
+                         ORDER BY seq DESC
+                         LIMIT :limit
+                        """)
+                .param("conversationId", conversationId)
+                .param("afterSeqExclusive", afterSeqExclusive)
+                .param("limit", limit)
+                .query(MessageRepository::mapMessage)
+                .list();
+        return reversed(descending);
+    }
+
+    /**
+     * 比给定序号更早的一页消息，用于向上翻阅历史。
+     *
+     * {@code afterSeqExclusive} 是成员的历史可见下界（{@code join_seq}），
+     * 由服务层传入而不是在这里默认为 0——把可见范围的判断留给调用方"记得传"，
+     * 迟早会有一条路径忘记传而泄露入群前的历史。
+     */
+    public List<ImMessage> listBeforeSeq(
+            UUID conversationId,
+            long beforeSeq,
+            long afterSeqExclusive,
+            int limit
+    ) {
+        List<ImMessage> descending = jdbcClient.sql(SELECT_MESSAGE + """
+                         WHERE conversation_id = :conversationId
+                           AND seq < :beforeSeq
+                           AND seq > :afterSeqExclusive
+                           AND status = 'ACTIVE'
+                         ORDER BY seq DESC
+                         LIMIT :limit
+                        """)
+                .param("conversationId", conversationId)
+                .param("beforeSeq", beforeSeq)
+                .param("afterSeqExclusive", afterSeqExclusive)
+                .param("limit", limit)
+                .query(MessageRepository::mapMessage)
+                .list();
+        return reversed(descending);
+    }
+
+    /** 倒序查询结果转回升序，并返回不可变列表 */
+    private static List<ImMessage> reversed(List<ImMessage> descending) {
+        List<ImMessage> ascending = new java.util.ArrayList<>(descending);
+        java.util.Collections.reverse(ascending);
+        return List.copyOf(ascending);
+    }
+
+    /** 行映射：messages 表到领域模型，content 为 jsonb 需反序列化 */
     private static ImMessage mapMessage(ResultSet rs, int rowNum) throws SQLException {
         return new ImMessage(
                 rs.getString("id"),

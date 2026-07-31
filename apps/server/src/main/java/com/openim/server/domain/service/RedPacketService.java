@@ -8,6 +8,7 @@ import com.openim.server.domain.DomainResults.ClaimedRedPacket;
 import com.openim.server.domain.DomainResults.CreatedRedPacket;
 import com.openim.server.domain.RedPacketAllocator;
 import com.openim.server.domain.Requests.CreateRedPacket;
+import com.openim.server.domain.repository.AuditRepository;
 import com.openim.server.domain.repository.ConversationRepository;
 import com.openim.server.domain.repository.ConversationRepository.ConversationMeta;
 import com.openim.server.domain.repository.MessageRepository;
@@ -35,6 +36,15 @@ import java.util.UUID;
  *
  * 资金流转全部走复式记账的托管账户：发红包时 用户 → 托管，领取时 托管 → 领取人，
  * 过期时 托管 → 发送者。因此"已发出未领取"的钱始终有明确归属，可以独立对账。
+ *
+ * <b>审计</b>：每一次资金变动都写 {@code audit_logs}。此前这里只写 outbox
+ * 和指标——outbox 是投递队列（有保留期，会被清理），指标是聚合值（不含单笔明细），
+ * 两者都不能回答"这笔钱是谁在什么时候动的"。资金操作没有审计是合规硬伤，
+ * 而且恰恰在需要它的时候（对账不平、用户投诉少钱）才会发现它不存在。
+ *
+ * 审计动作以 {@code red_packet.} 开头，因此不参与
+ * {@link AuditRepository#deleteOlderThan} 的保留期清理——账务记录的追溯期
+ * 远长于一般操作日志。
  */
 @Service
 public class RedPacketService {
@@ -48,6 +58,7 @@ public class RedPacketService {
     private final ConversationService conversationService;
     private final RedPacketAllocator allocator;
     private final OutboxRepository outboxRepository;
+    private final AuditRepository auditRepository;
     private final DomainMetrics metrics;
 
     public RedPacketService(
@@ -58,6 +69,7 @@ public class RedPacketService {
             ConversationService conversationService,
             RedPacketAllocator allocator,
             OutboxRepository outboxRepository,
+            AuditRepository auditRepository,
             DomainMetrics metrics
     ) {
         this.redPacketRepository = redPacketRepository;
@@ -67,9 +79,11 @@ public class RedPacketService {
         this.conversationService = conversationService;
         this.allocator = allocator;
         this.outboxRepository = outboxRepository;
+        this.auditRepository = auditRepository;
         this.metrics = metrics;
     }
 
+    /** 查询用户钱包（余额与流水）。钱包不存在时抛 404 */
     @Transactional(readOnly = true)
     public Wallet getWallet(UUID userId) {
         return walletRepository.findWalletByUserId(userId)
@@ -142,6 +156,17 @@ public class RedPacketService {
 
         outboxRepository.append("red_packet", packetId, "red_packet:created",
                 Map.of("redPacketId", packetId.toString(), "conversationId", conversationId.toString()));
+
+        // 审计与 outbox 是两件事：outbox 有保留期会被清理，且它只是投递队列。
+        // 资金明细必须独立留痕，否则"这笔钱是谁在什么时候动的"无法回答。
+        auditRepository.record("USER", senderId, "red_packet.issued",
+                "RED_PACKET", packetId, null,
+                Map.of(
+                        "conversationId", conversationId.toString(),
+                        "totalAmount", input.totalAmount(),
+                        "totalCount", input.totalCount(),
+                        "mode", input.mode()
+                ));
         metrics.recordRedPacketCreated();
 
         return new CreatedRedPacket(
@@ -151,6 +176,12 @@ public class RedPacketService {
         );
     }
 
+    /**
+     * 查看红包详情。
+     *
+     * 行锁读取并在同一事务内顺带处理过期退款——查看和领取都可能撞上过期，
+     * 统一在行锁保护下执行，避免并发退款重复入账。
+     */
     @Transactional
     public RedPacket getRedPacket(UUID packetId, UUID userId) {
         RedPacketRow row = redPacketRepository.findByIdForUpdate(packetId)
@@ -227,7 +258,18 @@ public class RedPacketService {
 
         redPacketRepository.applyClaim(packetId, share.amount());
         outboxRepository.append("red_packet", packetId, "red_packet:claimed",
-                Map.of("redPacketId", packetId.toString(), "userId", userId.toString()));
+                Map.of(
+                        "redPacketId", packetId.toString(),
+                        "conversationId", row.conversationId().toString(),
+                        "userId", userId.toString()
+                ));
+        auditRepository.record("USER", userId, "red_packet.claimed",
+                "RED_PACKET", packetId, null,
+                Map.of(
+                        "conversationId", row.conversationId().toString(),
+                        "amount", share.amount(),
+                        "shareId", share.id().toString()
+                ));
         metrics.recordRedPacketClaimed();
 
         return new ClaimedRedPacket(
@@ -254,6 +296,7 @@ public class RedPacketService {
         return Optional.of(packetId);
     }
 
+    /** 扫描已过期且尚未退款的红包，供 Worker 批量驱动退款。limit 限制单轮处理量 */
     @Transactional(readOnly = true)
     public List<UUID> findExpiredPacketIds(int limit) {
         return redPacketRepository.findExpiredIds(limit);
@@ -295,11 +338,25 @@ public class RedPacketService {
         }
         redPacketRepository.updateStatus(row.id(), "refunded");
         outboxRepository.append("red_packet", row.id(), "red_packet:refunded",
-                Map.of("redPacketId", row.id().toString(), "amount", remaining));
+                Map.of(
+                        "redPacketId", row.id().toString(),
+                        "conversationId", row.conversationId().toString(),
+                        "amount", remaining
+                ));
+        // 退款由 Worker 触发而非用户操作，因此 actor 是 SYSTEM。
+        // 归属到发送者会让审计看起来像"用户主动退了款"，那是错的。
+        auditRepository.record("SYSTEM", null, "red_packet.refunded",
+                "RED_PACKET", row.id(), null,
+                Map.of(
+                        "conversationId", row.conversationId().toString(),
+                        "senderId", row.senderId().toString(),
+                        "refundedAmount", remaining
+                ));
         metrics.recordRedPacketRefunded();
         return true;
     }
 
+    /** 写入红包消息（type=red_packet，载荷含红包 ID 与祝福语）并更新会话摘要 */
     private ImMessage writeRedPacketMessage(
             UUID conversationId,
             UUID senderId,
@@ -322,6 +379,7 @@ public class RedPacketService {
         return message;
     }
 
+    /** 组装创建红包的返回结果：红包、关联消息与发送者最新钱包。幂等命中与首次创建共用 */
     private CreatedRedPacket buildCreatedResult(UUID packetId, UUID senderId) {
         RedPacket packet = redPacketRepository.findById(packetId)
                 .orElseThrow(() -> DomainErrors.notFound("红包不存在"));
@@ -332,6 +390,7 @@ public class RedPacketService {
         return new CreatedRedPacket(packet, message, getWallet(senderId));
     }
 
+    /** 校验红包创建入参：模式合法、总额够分（每份至少 1 分）、单聊限 1 份、份数不超会话人数 */
     private void validateInput(CreateRedPacket input, ConversationMeta meta) {
         if (!VALID_MODES.contains(input.mode())) {
             throw DomainErrors.validation("不支持的红包模式");

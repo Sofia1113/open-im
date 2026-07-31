@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication
 @EnableScheduling
 public class OpenImApplication {
+    /** 应用启动入口：装配 Spring Boot 容器，提供 REST API、WebSocket 实时通信与定时任务 */
     public static void main(String[] args) {
         SpringApplication.run(OpenImApplication.class, args);
     }

@@ -66,6 +66,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
         return container;
     }
 
+    /** 注册 /ws 端点,挂载认证拦截器并复用 Web MVC 的跨域来源白名单 */
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(handler, "/ws")

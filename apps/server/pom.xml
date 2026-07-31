@@ -24,13 +24,14 @@
         <bucket4j.version>8.14.0</bucket4j.version>
         <jacoco.version>0.8.13</jacoco.version>
         <cyclonedx.version>2.9.1</cyclonedx.version>
+        <springdoc.version>2.8.6</springdoc.version>
         <!--
             覆盖率下限。设为当前实际水平略低一点，用于防止回退而不是追求数字：
             阈值定得过高会诱导为覆盖率而写无断言的测试。
             补充测试后应同步上调。
         -->
-        <jacoco.line.coverage>0.55</jacoco.line.coverage>
-        <jacoco.branch.coverage>0.40</jacoco.branch.coverage>
+        <jacoco.line.coverage>0.65</jacoco.line.coverage>
+        <jacoco.branch.coverage>0.48</jacoco.branch.coverage>
     </properties>
 
     <dependencies>
@@ -64,6 +65,20 @@
             <artifactId>micrometer-tracing-bridge-otel</artifactId>
         </dependency>
 
+        <!--
+            OTLP span 导出器。
+            此前只有 bridge 没有 exporter：traceId/spanId 会生成并注入日志
+            （因此一次请求的多条日志能串起来），但 span 从不离开进程——
+            无法在任何追踪系统里看到调用链。这个依赖补上导出能力。
+
+            默认不启用：未配置 endpoint 时导出器空转，不产生网络请求。
+            见 application.yml 的 management.otlp.tracing。
+        -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
         <!-- 持久化：JdbcClient + HikariCP。
              选择 JDBC 而非 JPA 的原因见 docs/01-architecture/ARCHITECTURE.md：
              红包领取依赖 SELECT ... FOR UPDATE SKIP LOCKED 和条件更新，
@@ -94,6 +109,17 @@
             <version>${nimbus-jose-jwt.version}</version>
         </dependency>
 
+        <!-- 密码哈希。只取 crypto 模块而非 spring-boot-starter-security：
+             后者会自动装配一条 Servlet Filter 链，与本项目已有的
+             AuthenticationInterceptor 形成两套并行的鉴权路径——
+             两处都能放行请求时，任何一处的疏漏都是漏洞。
+             这里只需要 BCryptPasswordEncoder，它不依赖 Spring 上下文。
+             版本由 Spring Boot BOM 托管。 -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
         <!-- 限流。进程内令牌桶（单实例开发用）+ Redis 分布式限流（多实例用）。
              Bucket4j Redis 后端在中国镜像不可用，因此分布式限流
              通过 spring-data-redis 自行实现（Lua 脚本原子计数器），
@@ -109,12 +135,26 @@
             <artifactId>caffeine</artifactId>
         </dependency>
 
-        <!-- Redis：在线状态、Pub/Sub 跨实例扇出、分布式限流。
+        <!-- Redis：在线状态、Streams 跨实例扇出、分布式限流、缓存失效广播。
              选择 Lettuce（Spring Boot 默认）而非 Jedis：Lettuce 是非阻塞的，
              在 WebSocket 广播这种高并发写入场景下不会因连接池耗尽而串行化。 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!--
+            OpenAPI 规范生成。
+            此前 API 契约只有手写的 Markdown 文档加一份手写的 TypeScript 类型，
+            两者与实现之间没有任何机制保证一致——改了控制器忘了改文档不会有任何提示。
+            springdoc 从控制器与 DTO 的实际签名生成规范，因此它不可能与实现漂移。
+
+            版本显式声明：Spring Boot BOM 不管理 springdoc。
+        -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+            <version>${springdoc.version}</version>
         </dependency>
 
         <dependency>

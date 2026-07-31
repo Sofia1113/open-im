@@ -39,6 +39,7 @@ public class SecurityHeadersFilter extends OncePerRequestFilter {
         this.production = productionProfile.active();
     }
 
+    /** 为所有响应设置安全响应头；仅生产环境额外下发 HSTS */
     @Override
     protected void doFilterInternal(
             HttpServletRequest request,

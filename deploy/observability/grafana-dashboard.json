@@ -1,0 +1,531 @@
+{
+  "title": "OpenIM 服务端",
+  "uid": "openim-server",
+  "tags": ["openim"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(openim_realtime_connections, instance)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "SLI — 用户能感知的指标",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "可用性（5m）",
+      "description": "非 5xx 请求占比，排除 actuator。SLO 目标 99.9%。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "openim:request_success_rate5m", "refId": "A", "legendFormat": "可用性" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 4,
+          "min": 0.99,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.995 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "p99 延迟",
+      "description": "SLO 目标 < 500ms。超过 2s 触发告警。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
+      "targets": [
+        { "expr": "openim:request_latency_p99_5m", "refId": "A", "legendFormat": "p99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "活跃 WebSocket 连接",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "targets": [
+        { "expr": "sum(openim_realtime_connections)", "refId": "A", "legendFormat": "连接数" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redis 可用性",
+      "description": "0 表示服务降级运行（限流转本地、presence 离线、跨实例扇出暂停），不是不可用。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "min(openim_redis_available)", "refId": "A", "legendFormat": "可用" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "降级", "color": "orange", "index": 0 },
+                "1": { "text": "正常", "color": "green", "index": 1 }
+              }
+            }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Outbox 待发布",
+      "description": "持续增长说明补偿路径失效。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "targets": [
+        { "expr": "sum(openim_outbox_pending)", "refId": "A", "legendFormat": "待发布" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1000 },
+              { "color": "red", "value": 5000 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "事件流未确认",
+      "description": "pending 持续增长说明消费者卡住。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
+      "targets": [
+        { "expr": "sum(openim_realtime_stream_pending)", "refId": "A", "legendFormat": "pending" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 500 },
+              { "color": "red", "value": 1000 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "row",
+      "title": "HTTP",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "请求速率（按状态码）",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "5.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "延迟分位数",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        { "expr": "openim:request_latency_p50_5m", "refId": "A", "legendFormat": "p50" },
+        { "expr": "openim:request_latency_p99_5m", "refId": "B", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "最慢的接口（p99）",
+      "description": "定位延迟问题时先看这里，而不是逐个接口翻。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "expr": "topk(5, histogram_quantile(0.99, sum by (uri, le) (rate(http_server_requests_seconds_bucket{uri!~\"/actuator.*\"}[5m]))))",
+          "refId": "A",
+          "legendFormat": "{{uri}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "row",
+      "title": "实时投递",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "事件流吞吐",
+      "description": "消费速率约为发布速率的 N 倍（N = 实例数），因为每个实例有独立消费组，这是广播语义的预期成本。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum(rate(openim_realtime_stream_published_total[5m]))",
+          "refId": "A",
+          "legendFormat": "发布"
+        },
+        {
+          "expr": "sum(rate(openim_realtime_stream_consumed_total[5m]))",
+          "refId": "B",
+          "legendFormat": "消费"
+        },
+        {
+          "expr": "sum(rate(openim_realtime_stream_reclaimed_total[5m]))",
+          "refId": "C",
+          "legendFormat": "重投"
+        },
+        {
+          "expr": "sum(rate(openim_realtime_duplicate_events_dropped_total[5m]))",
+          "refId": "D",
+          "legendFormat": "去重丢弃"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "事件流失败",
+      "description": "发布失败影响跨实例投递；处理失败的记录会留在 pending 等待重投。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum(rate(openim_realtime_stream_publish_failures_total[5m]))",
+          "refId": "A",
+          "legendFormat": "发布失败"
+        },
+        {
+          "expr": "sum(rate(openim_realtime_stream_processing_failures_total[5m]))",
+          "refId": "B",
+          "legendFormat": "处理失败"
+        },
+        {
+          "expr": "sum(rate(openim_realtime_send_failures_total[5m]))",
+          "refId": "C",
+          "legendFormat": "WebSocket 发送失败"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "事件流长度",
+      "description": "接近 stream-max-length（默认 100000）时旧记录会被修剪。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 32 },
+      "targets": [
+        { "expr": "max(openim_realtime_stream_length)", "refId": "A", "legendFormat": "长度" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 90000 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "缓存失效广播",
+      "description": "发布失败时各实例退回 TTL 兜底，陈旧窗口从一次网络往返扩大到一个 TTL。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 32 },
+      "targets": [
+        {
+          "expr": "sum(rate(openim_cache_invalidations_published_total[5m]))",
+          "refId": "A",
+          "legendFormat": "发出"
+        },
+        {
+          "expr": "sum(rate(openim_cache_invalidations_received_total[5m]))",
+          "refId": "B",
+          "legendFormat": "收到"
+        },
+        {
+          "expr": "sum(rate(openim_cache_invalidation_publish_failures_total[5m]))",
+          "refId": "C",
+          "legendFormat": "发布失败"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "row",
+      "title": "依赖与资源",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "数据库连接池",
+      "description": "pending > 0 意味着请求在排队等连接。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "targets": [
+        {
+          "expr": "sum(hikaricp_connections_active{pool=\"openim-pool\"})",
+          "refId": "A",
+          "legendFormat": "活跃"
+        },
+        {
+          "expr": "sum(hikaricp_connections_idle{pool=\"openim-pool\"})",
+          "refId": "B",
+          "legendFormat": "空闲"
+        },
+        {
+          "expr": "sum(hikaricp_connections_pending{pool=\"openim-pool\"})",
+          "refId": "C",
+          "legendFormat": "等待中"
+        },
+        {
+          "expr": "sum(hikaricp_connections_max{pool=\"openim-pool\"})",
+          "refId": "D",
+          "legendFormat": "上限"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "缓存命中率",
+      "description": "命中率持续偏低说明 TTL 太短或键基数过大，缓存没起到作用。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "targets": [
+        {
+          "expr": "sum by (cache) (rate(cache_gets_total{result=\"hit\"}[5m])) / sum by (cache) (rate(cache_gets_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{cache}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "fillOpacity": 10 } }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "限流",
+      "description": "降级判定持续非零说明 Redis 有问题，配额已不再跨实例共享。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 48 },
+      "targets": [
+        {
+          "expr": "sum(rate(openim_rate_limit_rejections_total[5m]))",
+          "refId": "A",
+          "legendFormat": "拒绝"
+        },
+        {
+          "expr": "sum(rate(openim_rate_limit_degraded_total[5m]))",
+          "refId": "B",
+          "legendFormat": "降级判定"
+        },
+        {
+          "expr": "sum(rate(openim_rate_limit_degraded_rejections_total[5m]))",
+          "refId": "C",
+          "legendFormat": "降级期间拒绝"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "JVM 堆内存",
+      "description": "容器上限 1Gi，接近上限会 OOMKill。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 48 },
+      "targets": [
+        {
+          "expr": "sum by (instance) (jvm_memory_used_bytes{area=\"heap\"})",
+          "refId": "A",
+          "legendFormat": "{{instance}} 已用"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "row",
+      "title": "业务与安全",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 55 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "消息与红包",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 56 },
+      "targets": [
+        {
+          "expr": "sum(rate(openim_messages_sent_total[5m]))",
+          "refId": "A",
+          "legendFormat": "消息发送"
+        },
+        {
+          "expr": "sum(rate(openim_red_packets_issued_total[5m]))",
+          "refId": "B",
+          "legendFormat": "红包发放"
+        },
+        {
+          "expr": "sum(rate(openim_red_packets_claimed_total[5m]))",
+          "refId": "C",
+          "legendFormat": "红包领取"
+        },
+        {
+          "expr": "sum(rate(openim_red_packets_refunded_total[5m]))",
+          "refId": "D",
+          "legendFormat": "红包退款"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "认证与安全信号",
+      "description": "令牌重放与账号锁定是安全信号，不是稳定性指标。",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 56 },
+      "targets": [
+        {
+          "expr": "sum(rate(openim_auth_login_success_total[5m]))",
+          "refId": "A",
+          "legendFormat": "登录成功"
+        },
+        {
+          "expr": "sum(rate(openim_auth_login_failures_total[5m]))",
+          "refId": "B",
+          "legendFormat": "登录失败"
+        },
+        {
+          "expr": "sum(rate(openim_auth_account_locked_total[5m]))",
+          "refId": "C",
+          "legendFormat": "账号锁定"
+        },
+        {
+          "expr": "sum(rate(openim_auth_token_reuse_detected_total[5m]))",
+          "refId": "D",
+          "legendFormat": "令牌重放"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } } }
+    }
+  ]
+}

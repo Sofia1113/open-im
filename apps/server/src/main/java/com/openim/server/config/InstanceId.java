@@ -25,10 +25,12 @@ public class InstanceId {
                 : configuredId;
     }
 
+    /** 返回当前实例的唯一标识 */
     public String value() {
         return value;
     }
 
+    /** 直接输出实例标识,便于日志关联 */
     @Override
     public String toString() {
         return value;

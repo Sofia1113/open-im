@@ -12,6 +12,7 @@ public class ProductionProfile {
         this.environment = environment;
     }
 
+    /** 当前是否运行在生产环境(prod profile) */
     public boolean active() {
         return environment.acceptsProfiles(Profiles.of("prod"));
     }

@@ -29,6 +29,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
     private static final String MDC_KEY = "requestId";
     private static final int MAX_REQUEST_ID_LENGTH = 128;
 
+    /** 生成或规范化请求 ID，注入请求属性、响应头与日志 MDC，链路结束后清理 MDC */
     @Override
     protected void doFilterInternal(
             HttpServletRequest request,

@@ -48,6 +48,7 @@ public class TokenService {
         this.issuer = issuer;
     }
 
+    /** 签发令牌：声明携带类型与设备 ID，验证时强制匹配，防止类型串用 */
     public IssuedToken issue(String userId, String deviceId, String type, long ttlSeconds) {
         Instant now = Instant.now();
         Instant expiresAt = now.plusSeconds(ttlSeconds);

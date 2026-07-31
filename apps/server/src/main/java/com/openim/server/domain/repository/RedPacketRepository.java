@@ -37,6 +37,7 @@ public class RedPacketRepository {
         this.jdbcClient = jdbcClient;
     }
 
+    /** 创建红包记录，初始状态为 published；幂等性由 idempotencyKey 保证（见 findIdBySenderIdempotency） */
     public void insert(
             UUID id,
             UUID conversationId,
@@ -85,6 +86,7 @@ public class RedPacketRepository {
         }
     }
 
+    /** 读取红包并附带领取记录，供展示红包详情 */
     public Optional<RedPacket> findById(UUID id) {
         return jdbcClient.sql(SELECT_PACKET + " WHERE id = :id")
                 .param("id", id)
@@ -101,6 +103,7 @@ public class RedPacketRepository {
                 .optional();
     }
 
+    /** 按发送者与幂等键回查红包 ID，客户端重试创建时复用已有红包 */
     public Optional<UUID> findIdBySenderIdempotency(UUID senderId, String idempotencyKey) {
         return jdbcClient.sql("""
                         SELECT id FROM red_packets
@@ -112,6 +115,7 @@ public class RedPacketRepository {
                 .optional();
     }
 
+    /** 红包关联的消息 ID，用于按消息反查红包 */
     public Optional<UUID> findMessageId(UUID redPacketId) {
         return jdbcClient.sql("SELECT message_id FROM red_packets WHERE id = :id")
                 .param("id", redPacketId)
@@ -159,6 +163,7 @@ public class RedPacketRepository {
         return share;
     }
 
+    /** 记录一次领取；user+redPacket 的唯一约束兜底防止同一用户重复领取 */
     public void insertClaim(
             UUID id,
             UUID redPacketId,
@@ -184,6 +189,7 @@ public class RedPacketRepository {
                 .update();
     }
 
+    /** 某用户是否已领取过该红包及其金额，用于重复领取检测与展示 */
     public Optional<RedPacketClaim> findClaim(UUID redPacketId, UUID userId) {
         return jdbcClient.sql("""
                         SELECT id, user_id, amount, claimed_at FROM red_packet_claims
@@ -218,6 +224,7 @@ public class RedPacketRepository {
                 .single();
     }
 
+    /** 直接置状态，用于过期退款等确定性的状态迁移 */
     public void updateStatus(UUID redPacketId, String status) {
         jdbcClient.sql("UPDATE red_packets SET status = :status WHERE id = :id")
                 .param("status", status)
@@ -245,6 +252,7 @@ public class RedPacketRepository {
                 .list();
     }
 
+    /** 为红包行补齐领取记录并按时间排序，组装对外视图 */
     private RedPacket withClaims(RedPacketRow row) {
         List<RedPacketClaim> claims = jdbcClient.sql("""
                         SELECT id, user_id, amount, claimed_at FROM red_packet_claims
@@ -257,6 +265,7 @@ public class RedPacketRepository {
         return row.toView(claims);
     }
 
+    /** 行映射：red_packets 表到内部行模型 */
     private static RedPacketRow mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new RedPacketRow(
                 UUID.fromString(rs.getString("id")),
@@ -274,6 +283,7 @@ public class RedPacketRepository {
         );
     }
 
+    /** 行映射：red_packet_claims 表到领取模型 */
     private static RedPacketClaim mapClaim(ResultSet rs, int rowNum) throws SQLException {
         return new RedPacketClaim(
                 rs.getString("id"),
@@ -298,6 +308,7 @@ public class RedPacketRepository {
             String status,
             Instant expiresAt
     ) {
+        /** 组装对外视图：剥离 messageId 等内部字段，附带领取列表 */
         public RedPacket toView(List<RedPacketClaim> claims) {
             return new RedPacket(
                     id.toString(),

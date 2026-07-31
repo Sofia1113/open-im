@@ -32,6 +32,13 @@ public class CallService {
         this.conversationService = conversationService;
     }
 
+    /**
+     * 创建通话房间并邀请成员。
+     *
+     * 幂等：同一 (creatorId, idempotencyKey) 重复提交返回已创建的房间，不新建。
+     * 创建者以 joined 状态入房，被邀请者以 invited 状态等待接听；创建者
+     * 已在他通时直接拒绝，不进入抢锁路径。
+     */
     @Transactional
     public CallRoom createCall(UUID creatorId, String deviceId, CreateCall input) {
         UUID conversationId = DomainErrors.parseId(input.conversationId(), "会话");
@@ -66,6 +73,7 @@ public class CallService {
         return callRepository.findById(roomId).orElseThrow();
     }
 
+    /** 查看通话详情。调用者必须是房间参与者，否则 403 */
     @Transactional(readOnly = true)
     public CallRoom getCall(UUID roomId, UUID userId) {
         CallRoom room = callRepository.findById(roomId)
@@ -74,6 +82,12 @@ public class CallService {
         return room;
     }
 
+    /**
+     * 接听通话。
+     *
+     * 行锁内先检查过期状态再更新，防止"接听"与"刚过期"并发时把已结束的
+     * 通话重新激活。重复接听（已是 joined）幂等返回当前房间。
+     */
     @Transactional
     public CallRoom acceptCall(UUID roomId, UUID userId, String deviceId) {
         CallRoom room = lockRoom(roomId);
@@ -89,6 +103,7 @@ public class CallService {
         return callRepository.findById(roomId).orElseThrow();
     }
 
+    /** 拒接通话。全部被邀请者都已拒绝时，通话直接结束 */
     @Transactional
     public CallRoom rejectCall(UUID roomId, UUID userId) {
         CallRoom room = lockRoom(roomId);
@@ -100,6 +115,7 @@ public class CallService {
         return callRepository.findById(roomId).orElseThrow();
     }
 
+    /** 挂断通话。剩余已加入人数不足两人时结束通话 */
     @Transactional
     public CallRoom leaveCall(UUID roomId, UUID userId) {
         CallRoom room = lockRoom(roomId);
@@ -147,6 +163,7 @@ public class CallService {
         return roomIds;
     }
 
+    /** 解析被邀请人：必须是会话有效成员，剔除创建者自己，且至少留下一位 */
     private List<UUID> resolveInvitees(CreateCall input, UUID creatorId, UUID conversationId) {
         Set<UUID> members = new LinkedHashSet<>(conversationService.listActiveMemberIds(conversationId));
         LinkedHashSet<UUID> invitees = new LinkedHashSet<>();
@@ -166,11 +183,13 @@ public class CallService {
         return List.copyOf(invitees);
     }
 
+    /** 行锁读取房间，串行化同一房间的状态变更（接听/拒绝/挂断/过期），避免状态机竞态 */
     private CallRoom lockRoom(UUID roomId) {
         return callRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> DomainErrors.notFound("通话不存在"));
     }
 
+    /** 校验用户是房间参与者，否则抛 403。信令与状态变更前都必须先过这一关 */
     private CallParticipant requireParticipant(CallRoom room, UUID userId) {
         String target = userId.toString();
         return room.participants().stream()

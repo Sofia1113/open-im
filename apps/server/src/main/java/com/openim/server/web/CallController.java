@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
@@ -23,6 +24,7 @@ import java.util.Map;
  * 处理通话的创建、接听、拒绝和离开操作，
  * 通过 WebSocket 实时推送参与者状态变更（含跨实例广播）。
  */
+@Tag(name = "音视频通话", description = "通话房间与 WebRTC 信令的 HTTP 部分")
 @RestController
 @RequestMapping("/api/v1/calls")
 public class CallController {
@@ -34,6 +36,7 @@ public class CallController {
         this.broadcast = broadcast;
     }
 
+    /** 创建通话房间。需 Bearer 令牌；被邀请的参与者会收到 call:invite 实时推送 */
     @PostMapping
     public ApiEnvelope.Success<CallRoom> create(
             @Valid @RequestBody CreateCall input,
@@ -47,6 +50,7 @@ public class CallController {
         return ApiEnvelope.success(room, request);
     }
 
+    /** 查询单个通话房间。需 Bearer 令牌，仅房间参与者可见 */
     @GetMapping("/{id}")
     public ApiEnvelope.Success<CallRoom> get(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
@@ -54,6 +58,7 @@ public class CallController {
                 callService.getCall(DomainErrors.parseId(id, "通话"), auth.userUuid()), request);
     }
 
+    /** 接听通话。需 Bearer 令牌；房间内广播参与者加入，并通知自己其他设备已在别处接听 */
     @PostMapping("/{id}/accept")
     public ApiEnvelope.Success<CallRoom> accept(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
@@ -67,6 +72,7 @@ public class CallController {
         return ApiEnvelope.success(room, request);
     }
 
+    /** 拒绝通话。需 Bearer 令牌；若因此通话结束，向房间广播 call:ended */
     @PostMapping("/{id}/reject")
     public ApiEnvelope.Success<CallRoom> reject(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
@@ -79,6 +85,7 @@ public class CallController {
         return ApiEnvelope.success(room, request);
     }
 
+    /** 离开通话。需 Bearer 令牌；房间内广播参与者离开，通话结束时广播 call:ended */
     @PostMapping("/{id}/leave")
     public ApiEnvelope.Success<CallRoom> leave(@PathVariable String id, HttpServletRequest request) {
         AuthPrincipal auth = AuthPrincipal.from(request);
@@ -93,6 +100,7 @@ public class CallController {
         return ApiEnvelope.success(room, request);
     }
 
+    /** 向房间内全体成员（按用户去重后）广播实时事件 */
     private void emitToParticipants(CallRoom room, String event, Object payload) {
         room.participants().stream()
                 .map(CallParticipant::userId)

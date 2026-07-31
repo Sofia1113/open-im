@@ -5,8 +5,15 @@
 #     --from-literal=token-secret='<至少 32 字符的随机密钥>' \
 #     --from-literal=database-password='<数据库密码>'
 #
-# 注意：当前版本仍有阻碍多副本的状态——WebSocket 连接注册表和限流配额都在
-# JVM 内存中。replicas 设为 1，接入 Redis 之前不要上调（见 README「当前边界」）。
+# 多副本：在线状态、限流配额、事件扇出和事件去重都已通过 Redis 共享，
+# 会话事件路由按数据库成员关系实时解析。已用两个实例实测：跨实例投递恰好一次、
+# 在线状态互相可见、限流配额共享（第 11 次请求被拒而非各自 10 次）、
+# 同账号多设备跨实例各收一条、单实例停机后另一实例继续服务。
+#
+# 仍在 JVM 内存中的状态：WebSocket **连接注册表**（sessionId → 连接对象）。
+# 这不阻碍多副本——Redis subscriber 在每个实例上都会收到事件，各自投递给本地连接——
+# 但要求同一条 WebSocket 连接的生命周期内始终落在同一个 Pod 上。
+# HTTP 请求无状态，无需粘性。因此 Ingress 需要为 /ws 配置会话亲和，见文件末尾说明。
 
 apiVersion: apps/v1
 kind: Deployment
@@ -15,7 +22,9 @@ metadata:
   labels:
     app: openim-server
 spec:
-  replicas: 1
+  # 2 副本是"能容忍单 Pod 故障"的最小值，也是 PodDisruptionBudget
+  # minAvailable: 1 开始真正生效的前提。
+  replicas: 2
   selector:
     matchLabels:
       app: openim-server
@@ -134,6 +143,18 @@ spec:
       # 优雅停机：配合 server.shutdown=graceful，让在途请求和 WebSocket 连接有时间收尾
       terminationGracePeriodSeconds: 45
 
+      # 把副本打散到不同节点。单节点集群下用 preferred 而非 required，
+      # 否则第二个 Pod 会永远 Pending——宁可两副本同节点，也不要只有一个副本可用。
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: openim-server
+
 ---
 apiVersion: v1
 kind: Service
@@ -156,9 +177,51 @@ kind: PodDisruptionBudget
 metadata:
   name: openim-server
 spec:
-  # replicas=1 时该预算会阻止自愿驱逐。接入 Redis 支持多副本后
-  # 应把 replicas 调到 ≥2，这条约束才开始真正提供可用性保障。
+  # replicas=2 下该预算允许一次自愿驱逐（节点排空、滚动更新），
+  # 同时保证始终有一个副本在服务。replicas=1 时它只会阻止一切驱逐。
   minAvailable: 1
   selector:
     matchLabels:
       app: openim-server
+
+---
+# Ingress：WebSocket 需要会话亲和，HTTP 不需要
+#
+# 连接注册表在 JVM 内存中，因此一条 WebSocket 连接必须始终落在同一个 Pod。
+# 这里用 nginx ingress 的 cookie 亲和；换用其他 Ingress Controller 时
+# 对应配置分别是：Traefik 的 sticky sessions、AWS ALB 的 target group stickiness、
+# GCE 的 BackendConfig sessionAffinity。
+#
+# 注意：亲和只影响**新连接**落到哪个 Pod。已建立的连接由 TCP 自身维持，
+# 不受后续路由决策影响；Pod 重启时连接断开，客户端按既有退避逻辑重连。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openim-server
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "openim-route"
+    # 亲和只对 /ws 有意义，但 nginx 的 annotation 作用于整个 Ingress。
+    # HTTP 请求带上这个 cookie 无害——它们本身无状态，落到哪个 Pod 都一样。
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    # WebSocket 长连接：默认 60s 读超时会在空闲时切断连接。
+    # 应用层心跳间隔为 30s，这里留出足够余量。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: im.example.com # 替换为实际域名
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openim-server
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - im.example.com
+      secretName: openim-tls

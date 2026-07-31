@@ -61,6 +61,93 @@ jobs:
           path: apps/server/target/site/jacoco/
           retention-days: 7
 
+      # OpenAPI 规范由 OpenApiContractTest 在测试阶段导出。
+      # 生产环境的 /v3/api-docs 是关闭的（它会列出全部端点与错误码），
+      # 因此这个产物是规范的唯一来源——客户端 SDK 生成与跨版本 diff 都用它。
+      - name: Upload OpenAPI specification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec
+          path: apps/server/target/openapi.json
+          retention-days: 30
+
+  e2e:
+    name: E2E（Playwright）
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # 独立 job 而不是加进 verify：E2E 需要启动完整栈（数据库 + 服务端 + Web），
+    # 与单元/集成测试的耗时和失败模式都不同。放在一起会让一次 E2E 的
+    # 环境抖动掩盖单元测试的真实结果。
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: openim
+          POSTGRES_USER: openim
+          POSTGRES_PASSWORD: openim
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openim -d openim"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      # runner 上没有宿主 PostgreSQL 抢占端口，直接用标准端口。
+      # playwright.config.ts 允许通过这两个变量覆盖本地的 e2e profile 端口。
+      E2E_DATABASE_URL: jdbc:postgresql://127.0.0.1:5432/openim
+      E2E_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建契约包
+        # Web 客户端依赖它的产物，dev server 起不来的话 E2E 全部失败
+        run: pnpm --filter @open-im/contracts build
+
+      - name: 安装 Playwright 浏览器
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: 运行 E2E
+        run: pnpm exec playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
   security:
     name: 安全扫描
     runs-on: ubuntu-latest

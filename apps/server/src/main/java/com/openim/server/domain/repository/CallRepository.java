@@ -33,6 +33,7 @@ public class CallRepository {
         this.jdbcClient = jdbcClient;
     }
 
+    /** 创建通话房间，初始状态为 ringing；幂等性由 idempotencyKey 保证（见 findIdByCreatorIdempotency） */
     public void insertRoom(
             UUID id,
             UUID conversationId,
@@ -60,6 +61,7 @@ public class CallRepository {
                 .update();
     }
 
+    /** 记录一个参与者加入房间；joinedAt 可空（未接通时不落时间） */
     public void insertParticipant(UUID roomId, UUID userId, String state, String joinedDeviceId, Instant joinedAt) {
         jdbcClient.sql("""
                         INSERT INTO call_participants (room_id, user_id, state, joined_device_id, joined_at)
@@ -73,6 +75,7 @@ public class CallRepository {
                 .update();
     }
 
+    /** 读取房间并附带参与者列表，供状态查询使用 */
     public Optional<CallRoom> findById(UUID roomId) {
         return jdbcClient.sql(SELECT_ROOM + " WHERE id = :id")
                 .param("id", roomId)
@@ -90,6 +93,7 @@ public class CallRepository {
                 .map(this::withParticipants);
     }
 
+    /** 按创建者与幂等键回查房间 ID，客户端重试发起时复用已有房间 */
     public Optional<UUID> findIdByCreatorIdempotency(UUID creatorId, String idempotencyKey) {
         return jdbcClient.sql("""
                         SELECT id FROM call_rooms
@@ -118,6 +122,7 @@ public class CallRepository {
                 .isPresent();
     }
 
+    /** 更新参与者状态；joined/left 的时间戳由 SQL 内的 CASE 按状态自动落，避免应用层忘记 */
     public void updateParticipantState(UUID roomId, UUID userId, String state, String joinedDeviceId) {
         jdbcClient.sql("""
                         UPDATE call_participants
@@ -134,6 +139,7 @@ public class CallRepository {
                 .update();
     }
 
+    /** 标记通话接通；已结束的房间不会被改写 */
     public void markActive(UUID roomId) {
         jdbcClient.sql("""
                         UPDATE call_rooms
@@ -144,6 +150,7 @@ public class CallRepository {
                 .update();
     }
 
+    /** 结束通话并记录原因；只对未结束的房间生效，重复调用不覆盖已存在的结果 */
     public void endRoom(UUID roomId, String reason) {
         jdbcClient.sql("""
                         UPDATE call_rooms
@@ -167,6 +174,7 @@ public class CallRepository {
                 .single();
     }
 
+    /** 读取单个参与者的状态，用于信令授权判断 */
     public Optional<CallParticipant> findParticipant(UUID roomId, UUID userId) {
         return jdbcClient.sql("""
                         SELECT user_id, state, joined_device_id FROM call_participants
@@ -192,6 +200,7 @@ public class CallRepository {
                 .list();
     }
 
+    /** 为房间行补齐参与者列表，按加入先后排序 */
     private CallRoom withParticipants(CallRoom room) {
         List<CallParticipant> participants = jdbcClient.sql("""
                         SELECT user_id, state, joined_device_id FROM call_participants
@@ -215,6 +224,7 @@ public class CallRepository {
         );
     }
 
+    /** 行映射：call_rooms 表到房间模型，参与者列表留空由调用方补齐 */
     private static CallRoom mapRoom(ResultSet rs, int rowNum) throws SQLException {
         return new CallRoom(
                 rs.getString("id"),
@@ -230,6 +240,7 @@ public class CallRepository {
         );
     }
 
+    /** 行映射：call_participants 表到参与者模型 */
     private static CallParticipant mapParticipant(ResultSet rs, int rowNum) throws SQLException {
         return new CallParticipant(
                 rs.getString("user_id"),

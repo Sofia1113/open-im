@@ -1,0 +1,470 @@
+# OpenIM 告警与记录规则
+#
+# 部署方式（Prometheus Operator）：
+#   kubectl -n monitoring apply -f deploy/observability/prometheus-rules.yaml
+# 原生 Prometheus：把 groups 段拷进 rule_files 指向的文件。
+#
+# ── 编写原则 ───────────────────────────────────────────────────
+#
+# 1. **告警症状，不告警原因。** 页面响应变慢是症状，某个缓存命中率下降是原因。
+#    原因类指标放进 dashboard 供排查，不用来叫醒人——否则每次架构调整都要
+#    重写一遍告警，而且误报会训练值班人忽略告警。
+#
+# 2. **每条 critical 都必须可执行。** 收到告警的人要能据此做点什么。
+#    "JVM 老年代占用 80%" 不满足这条（然后呢？），"错误预算 6 小时内会耗尽"满足。
+#
+# 3. **降级不是故障。** Redis 挂掉后服务以降级模式继续运行（限流转本地、
+#    presence 不可用、跨实例扇出暂停），这是 warning 不是 critical——
+#    把它设成 critical 会让"部分功能受损"和"整站不可用"抢同一个响应通道。
+#
+# 4. **多窗口多燃烧率。** SLO 告警用快慢两个窗口同时判定：快窗口保证严重问题
+#    及时响铃，慢窗口过滤掉短暂尖峰。单窗口阈值在这两个目标之间无法兼顾。
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openim-server
+  namespace: monitoring
+  labels:
+    app: openim-server
+    role: alert-rules
+spec:
+  groups:
+    # ════════════════════════════════════════════════════════════
+    # 记录规则：SLI
+    #
+    # 预先聚合，让告警表达式和 dashboard 共用同一份 SLI 定义——
+    # 两处各写一遍迟早会漂移，然后"告警说没事但图上有问题"。
+    # ════════════════════════════════════════════════════════════
+    - name: openim.sli
+      interval: 30s
+      rules:
+        # 可用性 SLI：非 5xx 的请求占比。
+        # 4xx 不计入失败——客户端发了非法请求不是服务端的可用性问题。
+        # 排除 actuator：探针流量会稀释真实的用户请求比例。
+        - record: openim:request_success_rate5m
+          expr: |
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",status!~"5.."}[5m]))
+            /
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m]))
+
+        - record: openim:request_error_rate5m
+          expr: |
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",status=~"5.."}[5m]))
+            /
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m]))
+
+        - record: openim:request_error_rate30m
+          expr: |
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",status=~"5.."}[30m]))
+            /
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[30m]))
+
+        - record: openim:request_error_rate6h
+          expr: |
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*",status=~"5.."}[6h]))
+            /
+            sum(rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[6h]))
+
+        # 延迟 SLI：p99。用 histogram_quantile 而非平均值——
+        # 平均延迟会把少数极慢请求平滑掉，而那些正是用户在抱怨的请求。
+        - record: openim:request_latency_p99_5m
+          expr: |
+            histogram_quantile(0.99, sum(rate(
+              http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m]
+            )) by (le))
+
+        - record: openim:request_latency_p50_5m
+          expr: |
+            histogram_quantile(0.50, sum(rate(
+              http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m]
+            )) by (le))
+
+        # 实时投递健康度：发布与消费的差额。
+        # 稳态下两者速率应当接近（差异来自每实例一个消费组的 N 倍读取）。
+        - record: openim:realtime_stream_pending_total
+          expr: sum(openim_realtime_stream_pending)
+
+    # ════════════════════════════════════════════════════════════
+    # Critical：用户已经受影响，需要立即介入
+    # ════════════════════════════════════════════════════════════
+    - name: openim.critical
+      rules:
+        - alert: OpenIMAllInstancesDown
+          expr: |
+            absent(up{job=~".*openim.*"} == 1)
+          for: 1m
+          labels:
+            severity: critical
+            team: openim
+          annotations:
+            summary: OpenIM 所有实例不可达
+            description: >-
+              Prometheus 抓不到任何一个 openim-server 实例。服务完全不可用。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#openimallinstancesdown
+
+        # 错误预算燃烧率告警（SLO 99.9% → 允许 0.1% 错误率）
+        #
+        # 快窗口 14.4 倍燃烧率 = 2 天耗尽整月预算，1 小时内响铃。
+        # 同时要求 5 分钟窗口也在燃烧，避免一个已经结束的故障持续告警。
+        - alert: OpenIMErrorBudgetBurningFast
+          expr: |
+            openim:request_error_rate30m > (14.4 * 0.001)
+            and
+            openim:request_error_rate5m > (14.4 * 0.001)
+          for: 2m
+          labels:
+            severity: critical
+            team: openim
+            slo: availability
+          annotations:
+            summary: 可用性错误预算快速消耗（2 天内耗尽整月预算）
+            description: >-
+              过去 30 分钟 5xx 比例 {{ $value | humanizePercentage }}，
+              远高于 99.9% SLO 允许的 0.1%。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#openimerrorbudgetburning
+
+        # 慢窗口：6 小时燃烧率 6 倍 = 5 天耗尽预算。
+        # 捕捉持续性的小幅劣化——它不会触发快窗口，但月底一样会把预算烧光。
+        - alert: OpenIMErrorBudgetBurningSlow
+          expr: |
+            openim:request_error_rate6h > (6 * 0.001)
+            and
+            openim:request_error_rate30m > (6 * 0.001)
+          for: 15m
+          labels:
+            severity: warning
+            team: openim
+            slo: availability
+          annotations:
+            summary: 可用性错误预算持续消耗（5 天内耗尽整月预算）
+            description: 过去 6 小时 5xx 比例 {{ $value | humanizePercentage }}。
+
+        - alert: OpenIMDatabaseConnectionPoolExhausted
+          expr: |
+            hikaricp_connections_pending{pool="openim-pool"} > 0
+          for: 3m
+          labels:
+            severity: critical
+            team: openim
+          annotations:
+            summary: 数据库连接池耗尽，请求正在排队
+            description: >-
+              有 {{ $value }} 个线程在等待数据库连接超过 3 分钟。
+              所有走数据库的请求都会变慢或超时。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#databaseconnectionpoolexhausted
+
+        # 事件流消费卡住：pending 持续增长意味着消费者读了但没能 ACK，
+        # 用户会停止收到实时消息（虽然重连补拉仍能拿到历史）。
+        - alert: OpenIMRealtimeStreamConsumerStalled
+          expr: |
+            openim:realtime_stream_pending_total > 1000
+            and
+            deriv(openim:realtime_stream_pending_total[10m]) > 0
+          for: 10m
+          labels:
+            severity: critical
+            team: openim
+          annotations:
+            summary: 实时事件流积压且持续增长，消费者可能已卡住
+            description: >-
+              未确认事件数 {{ $value }} 且仍在上升。实时消息投递已受影响。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#realtimestreamconsumerstalled
+
+        # Outbox 积压：补偿路径失效，事件最终一致性不再成立
+        - alert: OpenIMOutboxBacklogGrowing
+          expr: |
+            sum(openim_outbox_pending) > 5000
+            and
+            deriv(sum(openim_outbox_pending)[15m:]) > 0
+          for: 15m
+          labels:
+            severity: critical
+            team: openim
+          annotations:
+            summary: Outbox 事件积压且持续增长
+            description: >-
+              待发布事件 {{ $value }} 条且仍在增加，Worker 可能已停止或
+              持续写流失败。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#outboxbacklog
+
+    # ════════════════════════════════════════════════════════════
+    # Warning：降级运行或趋势恶化，工作时间处理
+    # ════════════════════════════════════════════════════════════
+    - name: openim.warning
+      rules:
+        # Redis 故障是 warning 不是 critical：服务设计为可降级运行。
+        # 见 observability/RedisAvailability 的降级矩阵。
+        - alert: OpenIMRedisUnavailable
+          expr: min(openim_redis_available) == 0
+          for: 2m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: Redis 不可用，服务降级运行
+            description: >-
+              限流转为进程内令牌桶（配额不再跨实例共享），在线状态全部显示离线，
+              跨实例事件扇出暂停。登录、发消息、红包不受影响。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#redisunavailable
+
+        # 抖动比持续不可用更难排查：连接反复建立断开，
+        # 每次都会短暂丢失跨实例投递
+        - alert: OpenIMRedisFlapping
+          expr: |
+            rate(openim_redis_availability_transitions_total[15m]) * 900 > 6
+          for: 15m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: Redis 连接状态频繁翻转
+            description: 15 分钟内状态翻转 {{ $value | humanize }} 次，连接不稳定。
+
+        - alert: OpenIMRateLimitDegraded
+          expr: rate(openim_rate_limit_degraded_total[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 限流降级为进程内令牌桶
+            description: >-
+              配额不再跨实例共享，N 个实例下总配额约为设定值的 N 倍
+              （凭证类策略已自动收紧 4 倍）。撞库防护依赖数据库侧的账号锁定兜底。
+
+        - alert: OpenIMRealtimeStreamPublishFailing
+          expr: rate(openim_realtime_stream_publish_failures_total[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 实时事件写入流失败
+            description: >-
+              跨实例投递受影响。消息类事件由客户端按 seq 补拉兜底，
+              红包状态与通话信令没有兜底，用户会看到状态不刷新。
+
+        # 重投持续发生说明投递在反复失败，而不是偶发
+        - alert: OpenIMRealtimeStreamRedeliveryPersistent
+          expr: rate(openim_realtime_stream_reclaimed_total[15m]) > 0.1
+          for: 15m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 实时事件持续被重新认领
+            description: >-
+              每秒 {{ $value | humanize }} 条事件超时未确认后被重投，
+              说明投递处理在反复失败，而非偶发。
+
+        - alert: OpenIMRealtimeStreamNearCapacity
+          expr: |
+            max(openim_realtime_stream_length) > 90000
+          for: 10m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 事件流长度接近修剪阈值
+            description: >-
+              当前 {{ $value }} 条，阈值 100000。超过后旧记录会被修剪，
+              长时间离线实例的 pending 记录可能丢失。
+
+        - alert: OpenIMHighLatency
+          expr: openim:request_latency_p99_5m > 2
+          for: 10m
+          labels:
+            severity: warning
+            team: openim
+            slo: latency
+          annotations:
+            summary: API p99 延迟超过 2 秒
+            description: 当前 p99 {{ $value | humanizeDuration }}。
+
+        - alert: OpenIMWebSocketSendFailures
+          expr: |
+            rate(openim_realtime_send_failures_total[10m]) > 1
+          for: 10m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: WebSocket 消息发送失败率偏高
+            description: >-
+              每秒 {{ $value | humanize }} 次发送失败。少量失败属正常
+              （连接刚断开），持续偏高说明发送队列背压或网络异常。
+
+        # 连接数接近单实例上限。达到上限后新连接被以 1013 拒绝——
+        # 客户端会重连，但如果全部实例都满了，用户就连不上了。
+        - alert: OpenIMConnectionCapacityHigh
+          expr: |
+            max(
+              openim_realtime_connections / openim_realtime_max_connections
+            ) > 0.8
+          for: 10m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 某实例的 WebSocket 连接数超过上限的 80%
+            description: >-
+              当前水位 {{ $value | humanizePercentage }}。达到 100% 后新连接会被拒绝，
+              需要扩容或调高 openim.realtime.max-connections。
+
+        # 已经在拒绝连接了。这是用户可感知的故障——部分用户连不上实时通道。
+        - alert: OpenIMConnectionsRejected
+          expr: rate(openim_realtime_connections_rejected_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: openim
+          annotations:
+            summary: 正在因达到上限而拒绝 WebSocket 连接
+            description: >-
+              每秒 {{ $value | humanize }} 条连接被拒。受影响的用户收不到实时消息
+              （历史消息仍可通过 HTTP 拉取）。立即扩容。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#connectionsrejected
+
+        - alert: OpenIMNoActiveConnections
+          expr: |
+            sum(openim_realtime_connections) == 0
+          for: 15m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 没有任何活跃 WebSocket 连接
+            description: >-
+              可能是 Ingress 的 WebSocket 配置失效、会话亲和未生效，
+              或者确实没有用户在线。结合请求量判断。
+
+        - alert: OpenIMJvmMemoryPressure
+          expr: |
+            sum by (instance) (jvm_memory_used_bytes{area="heap"})
+            /
+            sum by (instance) (jvm_memory_max_bytes{area="heap"}) > 0.9
+          for: 15m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: JVM 堆内存使用率持续超过 90%
+            description: >-
+              实例 {{ $labels.instance }} 堆占用 {{ $value | humanizePercentage }}。
+              容器内存上限 1Gi，接近上限会触发 OOMKill。
+
+    # ════════════════════════════════════════════════════════════
+    # 备份：需要 kube-state-metrics
+    #
+    # 备份失败是"已经存在但还没爆发的事故"——发现它的时机只有两个：
+    # 现在，或者真正需要恢复的时候。
+    # ════════════════════════════════════════════════════════════
+    - name: openim.backup
+      rules:
+        - alert: OpenIMBackupJobFailed
+          expr: |
+            kube_job_status_failed{namespace="openim",job_name=~"openim-db-backup.*"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 数据库备份任务失败
+            description: >-
+              Job {{ $labels.job_name }} 执行失败。查看日志：
+              kubectl -n openim logs job/{{ $labels.job_name }}
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/BACKUP.md
+
+        # 比"备份失败"更危险的是"备份根本没跑"——失败会留下痕迹，
+        # 没跑不会。CronJob 被误删、schedule 写错、集群时区问题都会导致静默停止。
+        - alert: OpenIMBackupMissing
+          expr: |
+            time() - max(kube_job_status_completion_time{
+              namespace="openim", job_name=~"openim-db-backup.*"
+            }) > 172800
+          labels:
+            severity: critical
+            team: openim
+          annotations:
+            summary: 超过 48 小时没有成功的数据库备份
+            description: >-
+              最近一次成功备份距今 {{ $value | humanizeDuration }}。
+              备份周期是每日，超过 48 小时说明任务已停止运行而非偶发失败。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/BACKUP.md
+
+    # ════════════════════════════════════════════════════════════
+    # 安全信号：不一定是故障，但需要人看一眼
+    # ════════════════════════════════════════════════════════════
+    - name: openim.security
+      rules:
+        # 令牌重放是主动攻击信号，不是系统故障。
+        # 单次可能是客户端 bug，持续出现就不是了。
+        - alert: OpenIMTokenReuseDetected
+          expr: |
+            increase(openim_auth_token_reuse_detected_total[15m]) > 3
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: 检测到多次刷新令牌重放
+            description: >-
+              15 分钟内 {{ $value }} 次。每次都已自动撤销对应设备。
+              持续出现说明有令牌泄漏或存在自动化攻击。
+            runbook: https://github.com/<org>/open-im/blob/main/deploy/observability/RUNBOOK.md#tokenreuse
+
+        # 账号锁定激增 = 撞库
+        - alert: OpenIMAccountLockoutSpike
+          expr: |
+            increase(openim_auth_account_locked_total[10m]) > 10
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: 账号锁定数激增，疑似撞库
+            description: >-
+              10 分钟内 {{ $value }} 个账号被锁定。
+              检查登录失败的来源 IP 分布，必要时在 Ingress 层封禁。
+
+        # 登录失败率异常高（相对成功数）
+        - alert: OpenIMLoginFailureRatioHigh
+          expr: |
+            rate(openim_auth_login_failures_total[15m])
+            /
+            (rate(openim_auth_login_success_total[15m])
+             + rate(openim_auth_login_failures_total[15m])) > 0.5
+            and
+            rate(openim_auth_login_failures_total[15m]) > 0.1
+          for: 15m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: 登录失败占比超过 50%
+            description: >-
+              失败率 {{ $value | humanizePercentage }}。
+              附加的速率条件排除了"总量极低时比例失真"的误报。
+
+    # ════════════════════════════════════════════════════════════
+    # 业务健康度：金额相关，错了必须有人知道
+    # ════════════════════════════════════════════════════════════
+    - name: openim.business
+      rules:
+        # 红包退款激增可能意味着大量红包无人领取（正常）
+        # 也可能是领取链路故障导致的（不正常）
+        - alert: OpenIMRedPacketRefundSpike
+          expr: |
+            increase(openim_red_packets_refunded_total[1h])
+            >
+            increase(openim_red_packets_claimed_total[1h]) * 2
+            and
+            increase(openim_red_packets_refunded_total[1h]) > 20
+          for: 30m
+          labels:
+            severity: warning
+            team: openim
+          annotations:
+            summary: 红包退款数远超领取数
+            description: >-
+              过去 1 小时退款 {{ $value }} 个，是领取数的两倍以上。
+              可能是领取链路故障，而不只是用户没去领。

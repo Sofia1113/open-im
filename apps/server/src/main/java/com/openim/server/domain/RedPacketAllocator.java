@@ -68,12 +68,14 @@ public class RedPacketAllocator {
         return List.copyOf(shares);
     }
 
+    /** 校验分配入参：金额与份数都必须是正数，且金额不小于份数（保证每份至少 1 分） */
     private void validate(long totalAmount, int totalCount) {
         if (totalAmount < 1 || totalCount < 1 || totalAmount < totalCount) {
             throw new IllegalArgumentException("Invalid red packet allocation input");
         }
     }
 
+    /** 校验随机分配结果：份数一致、总额等于入参、每份不少于 1 分，任何一条不满足都视为分配器缺陷 */
     private void assertValid(List<Long> shares, long totalAmount, int totalCount) {
         long total = shares.stream().mapToLong(Long::longValue).sum();
         if (shares.size() != totalCount || total != totalAmount ||

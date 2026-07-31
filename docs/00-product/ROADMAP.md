@@ -49,7 +49,7 @@
 
 以下条件出现时必须升级实现，而不是继续放大演示架构：
 
-- 活跃实例超过 1：内存状态迁移至 PostgreSQL/Redis，WebSocket 使用跨实例 Pub/Sub。
+- 活跃实例超过 1：内存状态迁移至 PostgreSQL/Redis，WebSocket 使用跨实例事件流（Redis Streams 消费组）。
 - 需要公网通话：部署 TURN，并监测 relay 比例与建连失败率。
 - 通话超过 6 人或移动弱网占比升高：从 Mesh 切换 SFU。
 - 接入真实资金：暂停开放，先完成合规、账务双录、风控、对账和灾备专项。

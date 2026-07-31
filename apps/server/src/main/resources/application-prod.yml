@@ -15,6 +15,17 @@ spring:
     hikari:
       maximum-pool-size: ${DATABASE_POOL_SIZE:20}
       minimum-idle: 5
+      # 连接泄漏检测：持有连接超过此时长会打出带堆栈的警告。
+      # 20 个连接的池，一个泄漏的连接就是 5% 的容量永久消失，
+      # 而症状是"偶发变慢"直到池耗尽——没有这个告警很难定位到源头。
+      # 60 秒远长于任何正常查询，不会误报。
+      leak-detection-threshold: 60000
+      # 单条语句的上限。没有它的话一个失控的查询会一直占着连接，
+      # 而 connection-timeout 只管"拿连接"不管"用多久"。
+      # 通过 JDBC 驱动传给 PostgreSQL，由数据库侧强制。
+      data-source-properties:
+        # 30 秒。业务里最慢的查询是红包对账，远在此之下。
+        options: "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
   flyway:
     # 生产不加载任何演示种子数据
@@ -36,6 +47,11 @@ openim:
   demo-login-enabled: false
   client-origin: ${CLIENT_ORIGIN}
 
+  auth:
+    # 生产默认开放注册。邀请制或应急处置时设为 false，
+    # 已注册用户的登录不受影响。
+    registration-enabled: ${REGISTRATION_ENABLED:true}
+
   jwt:
     active-key-id: ${JWT_ACTIVE_KEY_ID:k1}
     keys:
@@ -46,6 +62,14 @@ openim:
       # 这里不预置 k2，避免为占位一个空槽位而强行给它一个默认值。
       k1: ${TOKEN_SECRET}
 
+springdoc:
+  api-docs:
+    # 生产不暴露 API 规范端点。它会列出全部端点、参数约束与错误码——
+    # 对客户端开发有用，但没有理由让公网拿到。
+    # 规范由 CI 在构建时导出为产物（见 .github/workflows/ci.yml），
+    # 因此关闭这个端点不会让任何人失去规范。
+    enabled: false
+
 logging:
   structured:
     format:
@@ -54,6 +78,18 @@ logging:
       console: ecs
 
 management:
+  tracing:
+    sampling:
+      # 生产按 10% 采样。全量采样的成本不在应用侧，而在 collector 的接收能力
+      # 与后端的存储成本——10% 足以发现慢请求的分布与异常链路。
+      #
+      # 排查具体问题时可以临时调高，但不要长期设为 1.0。
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+
+  # OTLP endpoint 同样不在配置文件里给默认值——
+  # 空字符串会让导出器装配失败并阻止启用启动，见 application.yml 的说明。
+  # 启用方式：注入 MANAGEMENT_OTLP_TRACING_ENDPOINT 环境变量。
+
   endpoints:
     web:
       exposure:
@@ -65,4 +101,6 @@ management:
         enabled: true
       group:
         readiness:
-          include: readinessState,db,redis
+          # 与默认 profile 一致：Redis 不进就绪组，避免单点故障摘掉全部实例。
+          # 见 application.yml 中的说明与 RedisAvailability 类注释。
+          include: readinessState,db

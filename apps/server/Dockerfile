@@ -27,7 +27,7 @@ RUN java -Djarmode=tools -jar target/open-im-server-*.jar \
         extract --layers --launcher --destination extracted
 
 # ---------- 阶段 3：运行 ----------
-FROM eclipse-temurin:21-jre-alpine AS runtime
+FROM eclipse-temurin:25-jre-alpine AS runtime
 
 # 以非 root 运行：容器逃逸的影响面显著小于 root 进程
 RUN addgroup -S openim && adduser -S -G openim openim

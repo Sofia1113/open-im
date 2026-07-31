@@ -233,7 +233,7 @@ jobs:
           cache: maven
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4.37.3
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
@@ -244,10 +244,10 @@ jobs:
 
       - name: Autobuild
         if: matrix.language != 'java-kotlin'
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4.37.3
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4.37.3
         with:
           category: /language:${{ matrix.language }}
 
@@ -277,6 +277,6 @@ jobs:
 
       - name: Upload Trivy results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: trivy-results.sarif

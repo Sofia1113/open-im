@@ -220,7 +220,7 @@ jobs:
           ls -lh "$DUMP_PATH"
 
       - name: 上传备份产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pre-deploy-backup-${{ github.run_id }}
           path: /tmp/pre-deploy-${{ github.run_id }}.dump

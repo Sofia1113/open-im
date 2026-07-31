@@ -142,12 +142,6 @@ public class UserService {
         return withPresence(user, presenceService.isOnline(UUID.fromString(user.id())));
     }
 
-    /** 鉴权链路使用的轻量校验，避免每个请求做一次完整对象映射 */
-    @Transactional(readOnly = true)
-    public boolean isActiveUser(UUID userId) {
-        return userRepository.existsActive(userId);
-    }
-
     /**
      * 设置用户在线/离线。
      * <ul>

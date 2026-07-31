@@ -174,18 +174,6 @@ public class CallRepository {
                 .single();
     }
 
-    /** 读取单个参与者的状态，用于信令授权判断 */
-    public Optional<CallParticipant> findParticipant(UUID roomId, UUID userId) {
-        return jdbcClient.sql("""
-                        SELECT user_id, state, joined_device_id FROM call_participants
-                        WHERE room_id = :roomId AND user_id = :userId
-                        """)
-                .param("roomId", roomId)
-                .param("userId", userId)
-                .query(CallRepository::mapParticipant)
-                .optional();
-    }
-
     /** 扫描超时未接听的通话邀请，供 Worker 收敛状态 */
     public List<UUID> lockExpiredRoomIds(int limit) {
         return jdbcClient.sql("""

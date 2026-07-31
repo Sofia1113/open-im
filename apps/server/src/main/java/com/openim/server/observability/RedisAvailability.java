@@ -124,16 +124,4 @@ public class RedisAvailability {
         }
     }
 
-    /**
-     * 当前是否可用。
-     *
-     * 供需要提前分流的调用方使用——例如批量在线状态查询可以在已知不可用时
-     * 直接返回全部离线，省掉一次注定超时的往返。
-     *
-     * 这是一个<b>提示</b>而非保证：探测有周期，返回 true 时 Redis 也可能刚好挂掉，
-     * 因此调用方仍然必须保留自己的 try-catch。
-     */
-    public boolean isAvailable() {
-        return available.get();
-    }
 }

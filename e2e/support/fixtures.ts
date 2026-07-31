@@ -58,13 +58,6 @@ export async function loginWithCredentials(
   await expect(page.getByTestId("wallet-balance")).toBeVisible({ timeout: 20_000 });
 }
 
-/** 通过演示入口一键登录（仅非 prod 可用） */
-export async function loginAsDemoUser(page: Page, displayName: string): Promise<void> {
-  await page.goto("/");
-  await page.getByRole("button", { name: new RegExp(displayName) }).click();
-  await expect(page.getByTestId("wallet-balance")).toBeVisible({ timeout: 20_000 });
-}
-
 /** 直接调 API 创建账号。这是前置条件，不是被测行为 */
 export async function registerViaApi(
   page: Page,

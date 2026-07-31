@@ -8,7 +8,6 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Repository 层共用的类型转换工具
@@ -28,18 +27,6 @@ final class Mappers {
     static Instant instant(ResultSet rs, String column) throws SQLException {
         Timestamp timestamp = rs.getTimestamp(column);
         return timestamp == null ? null : timestamp.toInstant();
-    }
-
-    /** 把外部传入的字符串 ID 解析为 UUID，格式非法时返回 null 交由上层按“不存在”处理 */
-    static UUID uuidOrNull(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            return UUID.fromString(value);
-        } catch (IllegalArgumentException ignored) {
-            return null;
-        }
     }
 
     /** 读取 jsonb 列并反序列化为 Map */

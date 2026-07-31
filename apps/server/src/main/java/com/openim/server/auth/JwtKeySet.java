@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -109,8 +108,4 @@ public class JwtKeySet {
                 .map(secret -> secret.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** 已加载的密钥 ID 列表（含轮换期的旧密钥），供验证时按 kid 查找 */
-    public List<String> keyIds() {
-        return List.copyOf(keys.keySet());
-    }
 }

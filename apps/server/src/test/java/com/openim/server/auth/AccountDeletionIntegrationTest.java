@@ -1,6 +1,5 @@
 package com.openim.server.auth;
 
-import com.openim.server.domain.repository.UserRepository;
 import com.openim.server.domain.repository.WalletRepository;
 import com.openim.server.support.AbstractPostgresIntegrationTest;
 import com.openim.server.support.DemoUsers;
@@ -39,9 +38,6 @@ class AccountDeletionIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private AuthenticationService authenticationService;
-
-    @Autowired
-    private UserRepository userRepository;
 
     @Autowired
     private WalletRepository walletRepository;

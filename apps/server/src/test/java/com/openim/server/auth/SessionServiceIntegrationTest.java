@@ -118,7 +118,7 @@ class SessionServiceIntegrationTest extends AbstractPostgresIntegrationTest {
 
         sessionService.logout(DemoUsers.ALICE, deviceId);
 
-        assertThat(sessionService.isDeviceActive(deviceId, DemoUsers.ALICE)).isFalse();
+        assertThat(deviceRepository.isActive(deviceId, DemoUsers.ALICE)).isFalse();
         assertThatThrownBy(() -> sessionService.refresh(session.refreshToken()))
                 .isInstanceOf(ApiException.class);
     }
@@ -132,7 +132,7 @@ class SessionServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         // 用户重新通过了身份验证，此前的撤销不应阻止其正常登录
         SessionService.Session session = login(deviceId);
 
-        assertThat(sessionService.isDeviceActive(deviceId, DemoUsers.ALICE)).isTrue();
+        assertThat(deviceRepository.isActive(deviceId, DemoUsers.ALICE)).isTrue();
         assertThat(sessionService.refresh(session.refreshToken())).isNotNull();
     }
 
@@ -146,8 +146,8 @@ class SessionServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         int revoked = sessionService.logoutAllDevices(DemoUsers.ALICE, "user_requested");
 
         assertThat(revoked).isGreaterThanOrEqualTo(2);
-        assertThat(sessionService.isDeviceActive(first, DemoUsers.ALICE)).isFalse();
-        assertThat(sessionService.isDeviceActive(second, DemoUsers.ALICE)).isFalse();
+        assertThat(deviceRepository.isActive(first, DemoUsers.ALICE)).isFalse();
+        assertThat(deviceRepository.isActive(second, DemoUsers.ALICE)).isFalse();
         assertThatThrownBy(() -> sessionService.refresh(firstSession.refreshToken()))
                 .isInstanceOf(ApiException.class);
         assertThatThrownBy(() -> sessionService.refresh(secondSession.refreshToken()))

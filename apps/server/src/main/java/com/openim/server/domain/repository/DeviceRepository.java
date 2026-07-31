@@ -165,11 +165,7 @@ public class DeviceRepository {
                 .update();
     }
 
-    /**
-     * 设备是否仍可用于访问。
-     *
-     * 访问令牌校验时调用，使远程下线能立即生效，而不必等令牌自然过期。
-     */
+    /** 设备是否仍可用于访问（只校验撤销状态，不校验账号状态；测试与历史路径使用） */
     public boolean isActive(String deviceId, UUID userId) {
         return jdbcClient.sql("""
                         SELECT 1 FROM devices

@@ -7,7 +7,6 @@ import com.openim.server.domain.repository.PasswordResetRepository;
 import com.openim.server.domain.repository.PasswordResetRepository.ResetToken;
 import com.openim.server.domain.repository.UserRepository;
 import com.openim.server.domain.repository.UserRepository.ResetTarget;
-import com.openim.server.domain.service.DomainErrors;
 import com.openim.server.domain.service.UserService;
 import com.openim.server.observability.AuthMetrics;
 import org.slf4j.Logger;

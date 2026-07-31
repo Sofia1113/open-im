@@ -161,11 +161,6 @@ public class SessionService {
         return revoked;
     }
 
-    /** 设备是否仍被授权访问，供访问令牌校验使用 */
-    public boolean isDeviceActive(String deviceId, UUID userId) {
-        return deviceRepository.isActive(deviceId, userId);
-    }
-
     /** 为设备签发一对访问令牌与刷新令牌，有效期各自独立配置 */
     private IssuedPair issuePair(String userId, String deviceId) {
         TokenService.IssuedToken access =

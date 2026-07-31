@@ -63,7 +63,7 @@ jobs:
 
       - name: 生成镜像标签
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # 同时打 sha 和语义化标签：sha 保证每次部署都能精确回滚到某次提交，

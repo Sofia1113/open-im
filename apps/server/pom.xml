@@ -24,7 +24,7 @@
         <bucket4j.version>8.14.0</bucket4j.version>
         <jacoco.version>0.8.13</jacoco.version>
         <cyclonedx.version>2.9.1</cyclonedx.version>
-        <springdoc.version>2.8.6</springdoc.version>
+        <springdoc.version>3.0.3</springdoc.version>
         <!--
             覆盖率下限。设为当前实际水平略低一点，用于防止回退而不是追求数字：
             阈值定得过高会诱导为覆盖率而写无断言的测试。

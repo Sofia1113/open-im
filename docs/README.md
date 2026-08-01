@@ -12,6 +12,7 @@
 2. [数据模型](./01-architecture/DATA_MODEL.md)：用户、会话、消息、通话、红包、钱包与 Outbox。
 3. [API 与实时事件](./01-architecture/API_AND_EVENTS.md)：REST、原生 WebSocket、RTC 信令和错误码。
 4. [认证与缓存时序图](./01-architecture/AUTH_SEQUENCE.md)：登录、Token 刷新轮换、请求鉴权与会话有效性缓存。
+5. [WebSocket 实时链路时序图](./01-architecture/REALTIME_SEQUENCE.md)：连接建立、聊天消息全链路、断线重连与补拉、单聊/群聊投递与跨实例扇出。
 
 ## 专项
 

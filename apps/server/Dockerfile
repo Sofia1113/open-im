@@ -7,14 +7,14 @@
 # 修改源码时就能复用缓存，不必重新下载整个依赖树。
 
 # ---------- 阶段 1：依赖 ----------
-FROM maven:3.9-eclipse-temurin-21 AS deps
+FROM maven:3-eclipse-temurin-24 AS deps
 WORKDIR /build
 COPY pom.xml ./
 # go-offline 会预取依赖；插件解析偶尔会因可选插件缺失而失败，不影响后续构建
 RUN mvn -B dependency:go-offline -DskipTests || true
 
 # ---------- 阶段 2：构建 ----------
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3-eclipse-temurin-24 AS build
 WORKDIR /build
 COPY --from=deps /root/.m2 /root/.m2
 COPY pom.xml ./
